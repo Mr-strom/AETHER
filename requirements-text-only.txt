@@ -1,0 +1,26 @@
+# AETHER offline, CPU-only, text-only RAG stack (Python 3.11).
+# Install with: python -m pip install -r requirements-text-only.txt
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.39
+aiosqlite==0.21.0
+pydantic==2.10.6
+pydantic-settings==2.8.1
+llama-cpp-python==0.3.16
+faiss-cpu==1.10.0
+sentence-transformers==3.4.1
+transformers==4.49.0
+torch==2.6.0
+huggingface-hub==0.28.1
+tokenizers==0.21.0
+safetensors==0.5.3
+numpy==1.26.4
+requests==2.32.3
+tqdm==4.67.1
+psutil==7.0.0
+rank-bm25==0.2.2
+httpx==0.28.1
+python-multipart==0.0.20
+cryptography==44.0.2
+pytest==8.3.5
+pytest-asyncio==0.25.3
