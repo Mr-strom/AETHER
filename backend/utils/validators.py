@@ -49,12 +49,22 @@ def validate_citations(answer_text: str, valid_ids: Set[str]) -> ValidationResul
             per_claim_scores=[],
         )
 
-    # Normalize valid_ids to uppercase
-    norm_valid_ids = {vid.upper() for vid in valid_ids}
+    # Normalize valid_ids to uppercase and strip leading zeros for flexibility
+    # EID-001 should match EID-1
+    def normalize_eid(eid: str) -> str:
+        eid = eid.upper().strip()
+        if eid.startswith("EID-"):
+            num_part = eid[4:]
+            # Strip leading zeros but keep at least one digit
+            num_part = num_part.lstrip("0") or "0"
+            return f"EID-{num_part}"
+        return eid
+
+    norm_valid_ids = {normalize_eid(vid) for vid in valid_ids}
 
     # Extract all [EID-xxx] citations using regex
     raw_citations = re.findall(r"\[(EID-[\w-]+)\]", answer_text, re.IGNORECASE)
-    cited_ids = sorted(list({c.upper() for c in raw_citations}))
+    cited_ids = sorted(list({normalize_eid(c) for c in raw_citations}))
 
     invalid_citations = [cid for cid in cited_ids if cid not in norm_valid_ids]
 
@@ -71,7 +81,7 @@ def validate_citations(answer_text: str, valid_ids: Set[str]) -> ValidationResul
         errors.append(f"Invalid citations detected (not in retrieved evidence): {invalid_citations}")
 
     # Check if answer contains claims but no citations (unless answer is INSUFFICIENT_EVIDENCE)
-    if "INSUFFICIENT_EVIDENCE" not in answer_text and not cited_ids:
+    if "INSUFFICIENT_EVIDENCE" not in answer_text.upper() and not cited_ids:
         errors.append("Factual claims provided without any evidence citations.")
 
     is_valid = len(errors) == 0
@@ -87,3 +97,4 @@ def validate_citations(answer_text: str, valid_ids: Set[str]) -> ValidationResul
         errors=errors,
         per_claim_scores=per_claim_scores,
     )
+    

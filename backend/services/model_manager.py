@@ -161,13 +161,14 @@ class SmartModelManager:
             for loaded_name in list(self.loaded_models.keys()):
                 loaded_spec = MODEL_SPECS.get(loaded_name)
                 if loaded_spec and not loaded_spec.get("is_resident", False):
-                    logger.info(
-                        "Swapping out non-resident model '%s' to load '%s'...",
-                        loaded_name,
-                        model_name,
-                    )
-                    del self.loaded_models[loaded_name]
-                    gc.collect()
+                    if loaded_name not in self.resident_models:  # <-- ADD THIS CHECK
+                        logger.info(
+                            "Swapping out non-resident model '%s' to load '%s'...",
+                            loaded_name,
+                            model_name,
+                        )
+                        del self.loaded_models[loaded_name]
+                        gc.collect()
 
         logger.info("Loading model '%s' from '%s'...", model_name, model_path)
 
@@ -199,6 +200,16 @@ class SmartModelManager:
             mock_handle = MockLlamaHandle(model_name)
             self.loaded_models[model_name] = mock_handle
             return mock_handle
+    def keep_loaded(self, model_name: str) -> None:
+        """Mark a model as resident (do not auto-unload). Use for batch tests."""
+        self.resident_models.add(model_name)
+        logger.info("Model '%s' marked as resident for batch operation.", model_name)
+
+    def release_batch(self, model_name: str) -> None:
+        """Remove a model from resident set and unload it. Call after batch tests."""
+        self.resident_models.discard(model_name)
+        self.unload(model_name)
+        logger.info("Model '%s' released after batch operation.", model_name)
 
 
 # Singleton instance
