@@ -18,7 +18,7 @@ from services.retrieve.planner import QueryPlannerService
 from services.retrieve.retriever import RetrievalResult
 from services.retrieve.synthesizer import AnswerSynthesizerService
 from services.model_manager import model_manager
-from utils.validators import validate_citations
+from utils.validators import validate_citations, evidence_quality_score
 
 
 @dataclass
@@ -34,6 +34,7 @@ class QueryResult:
     confidence: str = "low"
     citations_valid: bool = False
     evidence_count: int = 0
+    hops: int = 1
 
 
 def _file_hash(path: Path) -> str:
@@ -51,9 +52,59 @@ def _file_type(path: Path) -> str:
     return mime or f"application/{path.suffix.lstrip('.')}"
 
 
+async def _load_evidence_from_db(
+    db_ids: List[int],
+    distances: List[float],
+    AsyncSessionLocal,
+    EvidenceChunk,
+    Source,
+    reason_prefix: str = "FAISS",
+) -> List[RetrievalResult]:
+    """Load evidence chunks from SQLite by their DB primary keys.
+
+    Args:
+        db_ids: List of EvidenceChunk.id values from FAISS/BM25 search.
+        distances: Corresponding similarity scores.
+        AsyncSessionLocal: Async session factory.
+        EvidenceChunk: The EvidenceChunk model class.
+        Source: The Source model class.
+        reason_prefix: Label prefix for the reason field.
+
+    Returns:
+        List of RetrievalResult objects loaded from the database.
+    """
+    from sqlalchemy import select as sa_select
+
+    evidence = []
+    async with AsyncSessionLocal() as session:
+        for rank, (dist, db_id) in enumerate(zip(distances, db_ids)):
+            stmt = (
+                sa_select(EvidenceChunk, Source.filename)
+                .join(Source, EvidenceChunk.source_id == Source.id)
+                .where(EvidenceChunk.id == db_id)
+            )
+            row = (await session.execute(stmt)).first()
+            if row:
+                chunk_row, source_filename = row
+                evidence.append(RetrievalResult(
+                    evidence_id=f"EID-{db_id}",
+                    text=chunk_row.content,
+                    source_name=source_filename,
+                    page_number=chunk_row.page_number,
+                    score=float(dist),
+                    reason=f"{reason_prefix} rank {rank+1}"
+                ))
+    return evidence
+
+
+# CRAG quality threshold: below this, reformulate the query
+CRAG_QUALITY_THRESHOLD = 0.6
+CRAG_MAX_HOPS = 3
+
+
 async def main():
     print("=" * 70)
-    print("AETHER END-TO-END TEST — DB PERSISTENCE")
+    print("AETHER END-TO-END TEST — CRAG PIPELINE")
     print("=" * 70)
 
     # ========== STEP 0: LOAD EMBEDDINGS FIRST (Windows DLL conflict fix) ==========
@@ -172,7 +223,7 @@ async def main():
     )
     print("   ✅ Warm-up complete")
 
-    # ========== STEP 4: QUERY LOOP (evidence loaded from SQLite) ==========
+    # ========== STEP 4: QUERY LOOP WITH CRAG ==========
     queries = [
         "What is the voltage reading for Panel A-001?",
         "What caused the voltage fluctuation on March 15?",
@@ -181,7 +232,7 @@ async def main():
         "Who was the inspector for Panel B-002?",
     ]
 
-    print("\n[4/5] Running queries (evidence from SQLite)...")
+    print("\n[4/5] Running queries with CRAG loop (max %d hops)..." % CRAG_MAX_HOPS)
     print("-" * 70)
 
     planner = QueryPlannerService()
@@ -199,37 +250,62 @@ async def main():
             plan_ms = (time.time() - t0) * 1000
             print(f"   📋 Plan: {plan.primary_modality} ({plan_ms:.0f}ms)")
 
-            # --- RETRIEVE ---
+            # --- CRAG RETRIEVAL LOOP ---
             t0 = time.time()
-            query_vec = embedder.embed_texts([query])[0]
-            distances, indices = faiss.search(query_vec, k=5)
+            merged_evidence: dict[str, RetrievalResult] = {}  # evidence_id -> RetrievalResult
+            current_queries = [query]
+            hop_count = 0
+            quality_score = 0.0
+            quality_feedback = ""
 
-            # Load evidence from SQLite using DB primary keys
-            evidence = []
-            async with AsyncSessionLocal() as session:
-                from sqlalchemy import select as sa_select
+            for hop in range(1, CRAG_MAX_HOPS + 1):
+                hop_count = hop
 
-                for rank, (dist, db_id) in enumerate(zip(distances, indices)):
-                    stmt = (
-                        sa_select(EvidenceChunk, Source.filename)
-                        .join(Source, EvidenceChunk.source_id == Source.id)
-                        .where(EvidenceChunk.id == db_id)
+                # Retrieve for all current queries
+                new_evidence = []
+                for q in current_queries:
+                    query_vec = embedder.embed_texts([q])[0]
+                    distances, indices = faiss.search(query_vec, k=5)
+                    hop_evidence = await _load_evidence_from_db(
+                        indices, distances,
+                        AsyncSessionLocal, EvidenceChunk, Source,
+                        reason_prefix=f"Hop{hop}",
                     )
-                    row = (await session.execute(stmt)).first()
-                    if row:
-                        chunk_row, source_filename = row
-                        eid = f"EID-{db_id}"
-                        evidence.append(RetrievalResult(
-                            evidence_id=eid,
-                            text=chunk_row.content,
-                            source_name=source_filename,
-                            page_number=chunk_row.page_number,
-                            score=float(dist),
-                            reason=f"FAISS rank {rank+1}"
-                        ))
+                    new_evidence.extend(hop_evidence)
+
+                # Deduplicate: add only new evidence IDs
+                new_count = 0
+                for ev in new_evidence:
+                    if ev.evidence_id not in merged_evidence:
+                        merged_evidence[ev.evidence_id] = ev
+                        new_count += 1
+
+                all_evidence = list(merged_evidence.values())
+                quality_score, quality_feedback = evidence_quality_score(all_evidence)
+
+                if hop == 1:
+                    status = "sufficient" if quality_score >= CRAG_QUALITY_THRESHOLD else "weak"
+                    print(f"   🔍 Hop {hop}: {len(all_evidence)} evidence pieces (score: {quality_score:.2f}) → {status}")
+                else:
+                    status = "sufficient" if quality_score >= CRAG_QUALITY_THRESHOLD else "weak"
+                    print(f"   🔍 Hop {hop}: +{new_count} new, {len(all_evidence)} total (score: {quality_score:.2f}) → {status}")
+
+                # If quality is sufficient, stop hopping
+                if quality_score >= CRAG_QUALITY_THRESHOLD:
+                    break
+
+                # If not the last hop, reformulate
+                if hop < CRAG_MAX_HOPS:
+                    reformulated = await planner.reformulate_query(query, quality_feedback)
+                    # Filter out the original query to avoid duplicate retrieval
+                    reformulated = [q for q in reformulated if q.lower() != query.lower()]
+                    if not reformulated:
+                        reformulated = [query]  # Fallback
+                    print(f"   🔄 Reformulating: {reformulated}")
+                    current_queries = reformulated
 
             retrieve_ms = (time.time() - t0) * 1000
-            print(f"   🔍 {len(evidence)} evidence pieces from DB ({retrieve_ms:.0f}ms)")
+            evidence = list(merged_evidence.values())
 
             # --- SYNTHESIZE ---
             t0 = time.time()
@@ -240,7 +316,6 @@ async def main():
             )
             synth_ms = (time.time() - t0) * 1000
             print(f"   💬 {result.answer_text[:120]}...")
-            # FIX #2: Use cited_ids, not citations
             print(f"   📝 Citations: {result.cited_ids}")
             print(f"   🎯 Confidence: {result.confidence}")
 
@@ -271,6 +346,7 @@ async def main():
                 confidence=result.confidence,
                 citations_valid=bool(is_valid),
                 evidence_count=len(evidence),
+                hops=hop_count,
             ))
 
         except Exception as e:
@@ -288,16 +364,17 @@ async def main():
         avg_synth = sum(r.synth_ms for r in results) / len(results)
         valid_count = sum(1 for r in results if r.citations_valid)
 
-        print(f"\n{'Query':<42} {'Total':>8} {'Citations':>14} {'Valid':>6}")
-        print("-" * 74)
+        print(f"\n{'Query':<42} {'Total':>8} {'Hops':>5} {'Citations':>14} {'Valid':>6}")
+        print("-" * 79)
         for r in results:
             q = r.query[:40]
             c = ", ".join(r.citations) if r.citations else "NONE"
             if len(c) > 14:
                 c = c[:11] + "..."
-            print(f"{q:<42} {r.total_ms:>6.0f}ms {c:>14} {'✅' if r.citations_valid else '❌':>6}")
-        print("-" * 74)
-        print(f"{'AVERAGE':<42} {avg_total:>6.0f}ms {'':>14} {f'{valid_count}/{len(results)}':>6}")
+            print(f"{q:<42} {r.total_ms:>6.0f}ms {r.hops:>5} {c:>14} {'✅' if r.citations_valid else '❌':>6}")
+        print("-" * 79)
+        avg_hops = sum(r.hops for r in results) / len(results)
+        print(f"{'AVERAGE':<42} {avg_total:>6.0f}ms {avg_hops:>5.1f} {'':>14} {f'{valid_count}/{len(results)}':>6}")
 
         print(f"\nLatency Breakdown (avg):")
         print(f"   Plan:      {sum(r.plan_ms for r in results)/len(results):.0f}ms")

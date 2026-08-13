@@ -30,6 +30,17 @@ PLANNER_SYSTEM_PROMPT = (
     "'sub_queries' (list of strings), 'filters' (object), 'requires_calculation' (boolean)."
 )
 
+REFORMULATION_PROMPT = (
+    "You are a search query reformulator. The original search query returned weak evidence.\n\n"
+    "Given the original query and feedback about why the evidence was weak, "
+    "suggest 1-3 alternative search queries that might find better evidence.\n\n"
+    "RULES:\n"
+    "1) Each query should approach the topic from a different angle or use different keywords.\n"
+    "2) Keep queries concise (under 15 words each).\n"
+    "3) Output ONLY a JSON array of strings. No other text.\n"
+    "Example output: [\"alternative query 1\", \"alternative query 2\"]"
+)
+
 
 class QueryPlannerService:
     """Planner service wrapping Granite LLM for structured query planning."""
@@ -77,6 +88,53 @@ class QueryPlannerService:
                 requires_calculation=False,
             )
 
+    async def reformulate_query(
+        self, original_query: str, feedback: str
+    ) -> List[str]:
+        """Generate alternative search queries when initial retrieval is weak.
+
+        Uses the already-loaded Granite model to suggest 1-3 reformulated
+        queries based on the original query and quality feedback.
+
+        Args:
+            original_query: The original user query that produced weak evidence.
+            feedback: Human-readable string describing why evidence was weak.
+
+        Returns:
+            List of 1-3 alternative query strings. Falls back to
+            ``[original_query]`` if reformulation fails.
+        """
+        logger.info("Reformulating query: '%s' (feedback: %s)", original_query, feedback)
+
+        try:
+            granite = model_manager.get("granite")
+            user_content = (
+                f"Original query: {original_query}\n"
+                f"Feedback: {feedback}\n\n"
+                f"Suggest 1-3 alternative search queries as a JSON array:"
+            )
+            messages = [
+                {"role": "system", "content": REFORMULATION_PROMPT},
+                {"role": "user", "content": user_content},
+            ]
+
+            response = granite.create_chat_completion(
+                messages=messages,
+                temperature=0.3,
+                max_tokens=128,
+            )
+
+            output_text = response["choices"][0]["message"]["content"].strip()
+            logger.debug("Raw reformulation output: %s", output_text)
+
+            queries = self._parse_query_list(output_text, original_query)
+            logger.info("Reformulated queries: %s", queries)
+            return queries
+
+        except Exception as exc:
+            logger.error("Reformulation failed for '%s': %s. Using original query.", original_query, exc)
+            return [original_query]
+
     def _parse_json_plan(self, output_text: str, original_query: str) -> QueryPlan:
         """Extract and parse JSON from model response text."""
         # Try to locate JSON block within markdown ```json ... ``` or raw string
@@ -107,5 +165,34 @@ class QueryPlannerService:
                 requires_calculation=False,
             )
 
+    def _parse_query_list(self, output_text: str, fallback_query: str) -> List[str]:
+        """Extract a JSON list of query strings from model response text.
+
+        Args:
+            output_text: Raw model output (may contain markdown fences).
+            fallback_query: Query to return if parsing fails.
+
+        Returns:
+            List of query strings (1-3 items).
+        """
+        # Try to locate JSON array
+        match = re.search(r"\[.*\]", output_text, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+        else:
+            json_str = output_text
+
+        try:
+            data = json.loads(json_str)
+            if isinstance(data, list) and data:
+                queries = [str(q).strip() for q in data if str(q).strip()]
+                if queries:
+                    return queries[:3]  # Cap at 3
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("Failed to parse reformulated queries: %s. Using fallback.", exc)
+
+        return [fallback_query]
+
 
 query_planner_service = QueryPlannerService()
+

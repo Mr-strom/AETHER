@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Set
+from typing import List, Set, Tuple
 from pydantic import BaseModel, Field
 
 ALLOWED_EXTENSIONS = {
@@ -97,4 +97,55 @@ def validate_citations(answer_text: str, valid_ids: Set[str]) -> ValidationResul
         errors=errors,
         per_claim_scores=per_claim_scores,
     )
+
+
+def evidence_quality_score(
+    evidence: list,
+    min_count: int = 3,
+    target_count: int = 5,
+) -> Tuple[float, str]:
+    """Pre-synthesis evidence quality heuristic for CRAG loop.
+
+    Scores retrieved evidence *before* synthesis to decide whether the
+    current evidence is strong enough or the query should be reformulated.
+
+    Score formula:
+        score = (count_factor * 0.5) + (avg_score_factor * 0.5)
+    where:
+        count_factor = min(evidence_count, target_count) / target_count
+        avg_score_factor = clamp(avg_retrieval_score, 0.0, 1.0)
+
+    Args:
+        evidence: List of RetrievalResult-like objects with a ``.score`` attribute.
+        min_count: Minimum evidence pieces for a non-zero count factor.
+        target_count: Ideal evidence count (score saturates here).
+
+    Returns:
+        Tuple of ``(score, feedback)`` where score is 0.0–1.0 and
+        feedback is a human-readable explanation of weaknesses.
+    """
+    if not evidence:
+        return 0.0, "No evidence retrieved."
+
+    count = len(evidence)
+    scores = [getattr(e, "score", 0.0) for e in evidence]
+    avg_score = sum(scores) / len(scores) if scores else 0.0
+
+    # Component factors
+    count_factor = min(count, target_count) / target_count
+    avg_score_factor = max(0.0, min(1.0, avg_score))
+
+    quality = (count_factor * 0.5) + (avg_score_factor * 0.5)
+
+    # Build feedback string for reformulation prompt
+    feedback_parts: List[str] = []
+    if count < min_count:
+        feedback_parts.append(f"Only {count} evidence piece(s) retrieved (need ≥{min_count}).")
+    if avg_score < 0.5:
+        feedback_parts.append(f"Low semantic similarity scores (avg {avg_score:.2f}).")
+    if not feedback_parts:
+        feedback_parts.append(f"Evidence looks adequate ({count} pieces, avg score {avg_score:.2f}).")
+
+    return round(quality, 3), " ".join(feedback_parts)
+
     
