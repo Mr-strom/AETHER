@@ -74,6 +74,13 @@ async def main():
     faiss.add_vectors(vectors, ids)
     print(f"   ✅ {faiss._index.ntotal} vectors indexed")
 
+    # ========== STEP 2b: BM25 INDEX ==========
+    print("\n[2b/4] Building BM25 index...")
+    from services.index.bm25_index import bm25_index_service
+    bm25_items = [(idx, chunk.text) for idx, chunk in enumerate(all_chunks)]
+    bm25_index_service.build_index(bm25_items)
+    print(f"   ✅ BM25 index built with {len(bm25_items)} documents")
+
     # ========== STEP 3: PRE-LOAD LLM MODELS (after embeddings are loaded) ==========
     print("\n[3/4] Pre-loading LLM models...")
     t0 = time.time()
