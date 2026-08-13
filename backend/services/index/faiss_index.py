@@ -232,6 +232,37 @@ class FAISSIndexService:
             return 0
         return self._index.ntotal
 
+    def rebuild(
+        self,
+        vectors: np.ndarray,
+        ids: List[int],
+    ) -> None:
+        """Replace the entire index with new data.
+
+        Clears the existing index and adds all provided vectors.
+
+        Args:
+            vectors: Float32 array of shape ``(N, dim)``.
+            ids: List of evidence_chunk IDs, length N.
+        """
+        vectors = _coerce_float32(vectors)
+        with self._lock:
+            faiss = _require_faiss()
+            self._index = faiss.IndexFlatIP(self.dim)
+            self._id_map = []
+            if len(vectors) > 0:
+                self._index.add(vectors)
+                self._id_map = list(ids)
+            logger.info("FAISS index rebuilt with %d vectors.", self._index.ntotal)
+
+    def clear(self) -> None:
+        """Clear the index, removing all vectors and IDs."""
+        with self._lock:
+            faiss = _require_faiss()
+            self._index = faiss.IndexFlatIP(self.dim)
+            self._id_map = []
+            logger.info("FAISS index cleared.")
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

@@ -1,29 +1,69 @@
-"""API router for query planning, hybrid retrieval, synthesis, and citation validation."""
+"""API router for query planning, hybrid retrieval, CRAG loop, conflict detection, and synthesis."""
 
 from __future__ import annotations
 
 import logging
 import time
 from datetime import datetime, timezone
-from typing import List, Any
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+
 try:
+    from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession
 except ImportError:
+    select = None  # type: ignore
     AsyncSession = Any  # type: ignore
 
 from backend.app.dependencies import get_db
+from backend.models.evidence import EvidenceChunk
+from backend.models.source import Source
 from backend.schemas.evidence import EvidenceResponse
 from backend.schemas.query import QueryRequest, QueryResponse
+from backend.services.index.embeddings import embedding_service
+from backend.services.index.faiss_index import faiss_index_service
+from backend.services.retrieve.conflict_detector import conflict_detector
 from backend.services.retrieve.planner import query_planner_service
-from backend.services.retrieve.retriever import hybrid_retriever_service
+from backend.services.retrieve.retriever import RetrievalResult
 from backend.services.retrieve.synthesizer import answer_synthesizer_service
-from backend.utils.validators import validate_citations
+from backend.utils.validators import validate_citations, evidence_quality_score
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/query", tags=["query"])
+
+# CRAG settings
+CRAG_QUALITY_THRESHOLD = 0.6
+CRAG_MAX_HOPS = 3
+
+
+async def _load_evidence_from_db(
+    db_ids: List[int],
+    distances: List[float],
+    db: AsyncSession,
+    reason_prefix: str = "FAISS",
+) -> List[RetrievalResult]:
+    """Load evidence chunks from SQLite by their DB primary keys."""
+    evidence = []
+    for rank, (dist, db_id) in enumerate(zip(distances, db_ids)):
+        stmt = (
+            select(EvidenceChunk, Source.filename)
+            .join(Source, EvidenceChunk.source_id == Source.id)
+            .where(EvidenceChunk.id == db_id)
+        )
+        row = (await db.execute(stmt)).first()
+        if row:
+            chunk_row, source_filename = row
+            evidence.append(RetrievalResult(
+                evidence_id=f"EID-{db_id}",
+                text=chunk_row.content,
+                source_name=source_filename,
+                page_number=chunk_row.page_number,
+                score=float(dist),
+                reason=f"{reason_prefix} rank {rank+1}"
+            ))
+    return evidence
 
 
 @router.post("", response_model=QueryResponse)
@@ -31,14 +71,14 @@ async def submit_query(
     request: QueryRequest,
     db: AsyncSession = Depends(get_db),
 ) -> QueryResponse:
-    """Process a text-only evidence RAG query.
+    """Process a text-only evidence RAG query with CRAG loop and conflict detection.
 
     Flow:
-    1. Validate query input (400 if empty).
-    2. Plan query intent via Granite 4 Tiny H.
-    3. Retrieve hybrid evidence via BGE-M3, FAISS, BM25 fallback, & BGE-Reranker.
-    4. Synthesize grounded answer via Qwen2.5-3B.
-    5. Post-process & validate citations.
+    1. Plan query intent via Granite.
+    2. CRAG retrieval loop: FAISS search → quality check → reformulate if weak → max 3 hops.
+    3. Conflict detection across evidence from different sources.
+    4. Synthesize grounded answer via Qwen (conflict-aware).
+    5. Validate citations.
     6. Return QueryResponse payload.
     """
     if not request.query or not request.query.strip():
@@ -55,38 +95,78 @@ async def submit_query(
 
     try:
         # Step 1: Query Planning
-        logger.info("Step 1/4: Planning query...")
+        logger.info("Step 1: Planning query...")
         plan = await query_planner_service.plan_query(query_text)
         if request.filters:
             plan.filters.update(request.filters)
 
-        # Step 2: Hybrid Retrieval
-        logger.info("Step 2/4: Retrieving evidence...")
-        retrieved_evidence = await hybrid_retriever_service.retrieve(
-            plan=plan,
-            db_session=db,
-            k=top_k,
-        )
+        # Step 2: CRAG Retrieval Loop
+        logger.info("Step 2: CRAG retrieval (max %d hops)...", CRAG_MAX_HOPS)
+        merged_evidence: Dict[str, RetrievalResult] = {}
+        current_queries = [query_text]
+        hop_count = 0
 
-        # Step 3: Answer Synthesis
-        logger.info("Step 3/4: Synthesizing answer...")
+        for hop in range(1, CRAG_MAX_HOPS + 1):
+            hop_count = hop
+
+            new_evidence = []
+            for q in current_queries:
+                query_vec = embedding_service.embed_query(q)
+                distances, indices = faiss_index_service.search(query_vec, k=top_k)
+                hop_evidence = await _load_evidence_from_db(
+                    indices, distances, db, reason_prefix=f"Hop{hop}",
+                )
+                new_evidence.extend(hop_evidence)
+
+            # Deduplicate
+            for ev in new_evidence:
+                if ev.evidence_id not in merged_evidence:
+                    merged_evidence[ev.evidence_id] = ev
+
+            all_evidence = list(merged_evidence.values())
+            quality_score, quality_feedback = evidence_quality_score(all_evidence)
+
+            logger.info("Hop %d: %d evidence pieces (score: %.2f)", hop, len(all_evidence), quality_score)
+
+            if quality_score >= CRAG_QUALITY_THRESHOLD:
+                break
+
+            if hop < CRAG_MAX_HOPS:
+                reformulated = await query_planner_service.reformulate_query(query_text, quality_feedback)
+                reformulated = [q for q in reformulated if q.lower() != query_text.lower()]
+                if not reformulated:
+                    reformulated = [query_text]
+                current_queries = reformulated
+
+        retrieved_evidence = list(merged_evidence.values())
+
+        # Step 3: Conflict Detection
+        logger.info("Step 3: Conflict detection...")
+        detected_conflicts = conflict_detector.detect(retrieved_evidence)
+        conflict_count = len(detected_conflicts)
+        if conflict_count:
+            logger.warning("Detected %d conflict(s) in evidence.", conflict_count)
+
+        # Step 4: Answer Synthesis (conflict-aware)
+        logger.info("Step 4: Synthesizing answer...")
         synthesis = await answer_synthesizer_service.synthesize(
             evidence=retrieved_evidence,
             query=query_text,
+            unload_after=False,
+            conflicts=detected_conflicts if detected_conflicts else None,
         )
 
-        # Step 4: Citation Validation
-        logger.info("Step 4/4: Validating citations...")
+        # Step 5: Citation Validation
+        logger.info("Step 5: Validating citations...")
         valid_eids = {item.evidence_id for item in retrieved_evidence}
         validation = validate_citations(synthesis.answer_text, valid_eids)
 
         if not validation.valid:
             logger.warning("Citation validation warnings: %s", validation.errors)
 
-        # Convert RetrievalResult items to EvidenceResponse schemas
+        # Convert to response schema
         evidence_schemas: List[EvidenceResponse] = []
         for item in retrieved_evidence:
-            # Parse numeric ID from EID-xxx string if possible
             numeric_id = 0
             try:
                 numeric_id = int(item.evidence_id.replace("EID-", ""))
@@ -112,9 +192,8 @@ async def submit_query(
             )
 
         elapsed_ms = int((time.time() - start_time) * 1000)
-        logger.info("Query processing complete in %d ms", elapsed_ms)
+        logger.info("Query complete in %d ms (%d hops, %d conflicts)", elapsed_ms, hop_count, conflict_count)
 
-        # Map confidence string to numeric score for backward compatibility
         conf_score = 0.9 if synthesis.confidence == "high" else (0.6 if synthesis.confidence == "medium" else 0.3)
 
         return QueryResponse(
