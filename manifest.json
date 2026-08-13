@@ -1,0 +1,10 @@
+{
+  "files": {
+    "granite-4.0-h-tiny-Q4_K_M.gguf": "5a38b08c441ae1adbafb1d2b8a7167e0d48734d83af68b268cefea1eec553dcd",
+    "Qwen2.5-3B-Instruct-Q4_K_M.gguf": "9c9f56a391a3abbd5b89d0245bf6106081bcc3173119d4229235dd9d23253f94"
+  },
+  "attestation_hash": "b526ddd20e55540723efaa6f9f1783db1ae7dfb37e9f54d60adf1eefc8cb55ea",
+  "timestamp": "2026-08-13T11:22:31.435631+00:00",
+  "signature": "b526ddd20e555407",
+  "models_dir": "C:\\Users\\pkuma\\projects\\AETHER\\models"
+}

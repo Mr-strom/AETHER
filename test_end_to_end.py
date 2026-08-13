@@ -457,6 +457,43 @@ async def main():
     else:
         print("No successful queries.")
 
+    # ========== AIRGAP VERIFICATION ==========
+    print("\n" + "=" * 70)
+    print("🔒 AIRGAP VERIFICATION")
+    print("=" * 70)
+
+    from services.attestation import full_attestation
+    t0 = time.time()
+    attestation = full_attestation()
+    attest_ms = (time.time() - t0) * 1000
+
+    # Manifest
+    m_icon = "✅" if attestation["signature_valid"] else "❌"
+    print(f"\n   {m_icon} Manifest valid:    {attestation['signature_valid']}")
+    if attestation["attestation_hash"]:
+        print(f"   🔑 Attestation hash: {attestation['attestation_hash']}")
+    if attestation["file_results"]:
+        for fname, info in attestation["file_results"].items():
+            f_icon = "✅" if info["match"] else "❌"
+            print(f"      {f_icon} {fname}: {info['actual']}")
+
+    # Network
+    n_icon = "✅" if attestation["network_isolated"] else "❌"
+    print(f"\n   {n_icon} Network isolated:  {attestation['network_isolated']}")
+    if attestation["warnings"]:
+        for w in attestation["warnings"]:
+            print(f"      ⚠️  {w}")
+
+    # Errors
+    if attestation["errors"]:
+        print(f"\n   Errors:")
+        for e in attestation["errors"]:
+            print(f"      ❌ {e}")
+
+    # All green
+    ag_icon = "🔒" if attestation["all_green"] else "🔓"
+    print(f"\n   {ag_icon} ALL GREEN: {attestation['all_green']} ({attest_ms:.0f}ms)")
+
     # ========== CLEANUP ==========
     print("\n[5/5] Releasing models + closing DB + cleanup...")
     model_manager.release_batch("qwen")
