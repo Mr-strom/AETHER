@@ -58,7 +58,7 @@ class QueryPlannerService:
             response = granite.create_chat_completion(
                 messages=messages,
                 temperature=0.1,
-                max_tokens=256,
+                max_tokens=128,
             )
 
             output_text = response["choices"][0]["message"]["content"].strip()

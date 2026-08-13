@@ -8,9 +8,10 @@ from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent / "backend"))
 
-from services.ingest.router import IngestRouter
+# CRITICAL FIX: Load embeddings FIRST before llama_cpp to avoid Windows DLL conflict
 from services.index.embeddings import EmbeddingService
 from services.index.faiss_index import FAISSIndexService
+from services.ingest.router import IngestRouter
 from services.retrieve.planner import QueryPlannerService
 from services.retrieve.retriever import RetrievalResult
 from services.retrieve.synthesizer import AnswerSynthesizerService
@@ -38,38 +39,17 @@ async def main():
     print("AETHER END-TO-END TEST — OPTIMIZED")
     print("=" * 70)
 
-    # ========== STEP 0: PRE-LOAD & WARM UP MODELS ==========
-    print("\n[0/4] Pre-loading models (this is the slow part, done once)...")
+    # ========== STEP 0: LOAD EMBEDDINGS FIRST (Windows DLL conflict fix) ==========
+    print("\n[0/4] Loading embedding model first...")
     t0 = time.time()
-    
-    # Load Granite (planner) — small, fast
-    granite = model_manager.get("granite")
-    print(f"   ✅ Granite ready  ({(time.time()-t0)*1000:.0f}ms)")
-    
-    # Load Qwen (synthesizer) — ~2.6GB, this takes 15-25s
-    t0 = time.time()
-    qwen = model_manager.get("qwen")
-    print(f"   ✅ Qwen ready      ({(time.time()-t0)*1000:.0f}ms)")
-    
-    # CRITICAL: Keep Qwen resident for ALL queries. Do NOT unload between queries.
-    model_manager.keep_loaded("qwen")
-    
-    # Warm-up: prime CPU caches and memory pages with a tiny inference
-    print("   🔄 Warming up models...")
-    granite.create_chat_completion(
-        messages=[{"role": "user", "content": "Say OK"}],
-        max_tokens=5, temperature=0.1,
-    )
-    qwen.create_chat_completion(
-        messages=[{"role": "user", "content": "Say OK"}],
-        max_tokens=5, temperature=0.1,
-    )
-    print("   ✅ Warm-up complete")
+    embedder = EmbeddingService()
+    # Force model load now
+    _ = embedder.embed_texts(["warmup"])
+    print(f"   ✅ Embeddings ready ({(time.time()-t0)*1000:.0f}ms)")
 
     # ========== STEP 1: INGEST ==========
     print("\n[1/4] Ingesting demo_bundle...")
     router = IngestRouter()
-    embedder = EmbeddingService()
     faiss = FAISSIndexService(dim=1024)
 
     demo_dir = Path("./demo_bundle")
@@ -94,7 +74,30 @@ async def main():
     faiss.add_vectors(vectors, ids)
     print(f"   ✅ {faiss._index.ntotal} vectors indexed")
 
-    # ========== STEP 3: QUERY LOOP ==========
+    # ========== STEP 3: PRE-LOAD LLM MODELS (after embeddings are loaded) ==========
+    print("\n[3/4] Pre-loading LLM models...")
+    t0 = time.time()
+    granite = model_manager.get("granite")
+    print(f"   ✅ Granite ready  ({(time.time()-t0)*1000:.0f}ms)")
+    
+    t0 = time.time()
+    qwen = model_manager.get("qwen")
+    print(f"   ✅ Qwen ready      ({(time.time()-t0)*1000:.0f}ms)")
+    
+    model_manager.keep_loaded("qwen")
+    
+    print("   🔄 Warming up models...")
+    granite.create_chat_completion(
+        messages=[{"role": "user", "content": "Say OK"}],
+        max_tokens=5, temperature=0.1,
+    )
+    qwen.create_chat_completion(
+        messages=[{"role": "user", "content": "Say OK"}],
+        max_tokens=5, temperature=0.1,
+    )
+    print("   ✅ Warm-up complete")
+
+    # ========== STEP 4: QUERY LOOP ==========
     queries = [
         "What is the voltage reading for Panel A-001?",
         "What caused the voltage fluctuation on March 15?",
@@ -103,7 +106,7 @@ async def main():
         "Who was the inspector for Panel B-002?",
     ]
 
-    print("\n[3/4] Running queries...")
+    print("\n[4/4] Running queries...")
     print("-" * 70)
 
     planner = QueryPlannerService()
@@ -129,9 +132,8 @@ async def main():
             evidence = []
             for rank, (dist, idx) in enumerate(zip(distances, indices)):
                 chunk = all_chunks[idx]
-                # CRITICAL FIX #1: Use EID-xxx format, NOT raw numbers
-                # This matches what the synthesizer prompt expects and what the validator checks
-                eid = f"EID-{idx:03d}"
+                # FIX #1: No leading zeros — 3B model strips them and causes mismatch
+                eid = f"EID-{idx}"
                 evidence.append(RetrievalResult(
                     evidence_id=eid,
                     text=chunk.text,
@@ -148,23 +150,22 @@ async def main():
             result = await synth.synthesize(
                 evidence=evidence,
                 query=query,
-                unload_after=False,  # CRITICAL FIX #2: Keep model loaded
+                unload_after=False,
             )
             synth_ms = (time.time() - t0) * 1000
-            print(f"   💬 {result.answer_text[:100]}...")
-            print(f"   📝 Citations: {result.citations}")
+            print(f"   💬 {result.answer_text[:120]}...")
+            # FIX #2: Use cited_ids, not citations
+            print(f"   📝 Citations: {result.cited_ids}")
             print(f"   🎯 Confidence: {result.confidence}")
 
             # --- VALIDATE ---
             t0 = time.time()
             valid_ids = {e.evidence_id for e in evidence}
             validation = validate_citations(result.answer_text, valid_ids)
-            
-            # Handle both .valid and .is_valid attribute names
             is_valid = getattr(validation, 'valid', None)
             if is_valid is None:
                 is_valid = getattr(validation, 'is_valid', False)
-            
+
             validate_ms = (time.time() - t0) * 1000
             icon = "✅" if is_valid else "⚠️"
             print(f"   {icon} Valid: {is_valid} ({validate_ms:.0f}ms)")
@@ -180,7 +181,7 @@ async def main():
                 validate_ms=validate_ms,
                 total_ms=total_ms,
                 answer=result.answer_text,
-                citations=result.citations,
+                citations=result.cited_ids,
                 confidence=result.confidence,
                 citations_valid=bool(is_valid),
                 evidence_count=len(evidence),
@@ -191,7 +192,7 @@ async def main():
             import traceback
             traceback.print_exc()
 
-    # ========== STEP 4: SUMMARY ==========
+    # ========== SUMMARY ==========
     print("\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
@@ -201,21 +202,21 @@ async def main():
         avg_synth = sum(r.synth_ms for r in results) / len(results)
         valid_count = sum(1 for r in results if r.citations_valid)
 
-        print(f"\n{'Query':<42} {'Total':>8} {'Citations':>12} {'Valid':>6}")
-        print("-" * 72)
+        print(f"\n{'Query':<42} {'Total':>8} {'Citations':>14} {'Valid':>6}")
+        print("-" * 74)
         for r in results:
             q = r.query[:40]
             c = ", ".join(r.citations) if r.citations else "NONE"
-            if len(c) > 12:
-                c = c[:9] + "..."
-            print(f"{q:<42} {r.total_ms:>6.0f}ms {c:>12} {'✅' if r.citations_valid else '❌':>6}")
-        print("-" * 72)
-        print(f"{'AVERAGE':<42} {avg_total:>6.0f}ms {'':>12} {f'{valid_count}/{len(results)}':>6}")
+            if len(c) > 14:
+                c = c[:11] + "..."
+            print(f"{q:<42} {r.total_ms:>6.0f}ms {c:>14} {'✅' if r.citations_valid else '❌':>6}")
+        print("-" * 74)
+        print(f"{'AVERAGE':<42} {avg_total:>6.0f}ms {'':>14} {f'{valid_count}/{len(results)}':>6}")
 
         print(f"\nLatency Breakdown (avg):")
         print(f"   Plan:      {sum(r.plan_ms for r in results)/len(results):.0f}ms")
         print(f"   Retrieve:  {sum(r.retrieve_ms for r in results)/len(results):.0f}ms")
-        print(f"   Synthesize:{avg_synth:.0f}ms  ← This should be <10s after pre-load")
+        print(f"   Synthesize:{avg_synth:.0f}ms")
         print(f"   Validate:  {sum(r.validate_ms for r in results)/len(results):.0f}ms")
 
         if avg_total > 8000:
@@ -225,7 +226,7 @@ async def main():
         print("No successful queries.")
 
     # Cleanup
-    print("\n[4/4] Releasing models...")
+    print("\n[5/4] Releasing models...")
     model_manager.release_batch("qwen")
     gc.collect()
     print("✅ Done")

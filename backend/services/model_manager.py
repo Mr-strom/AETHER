@@ -183,6 +183,7 @@ class SmartModelManager:
                     model_path=str(model_path),
                     n_ctx=n_ctx,
                     n_threads=n_threads,
+                    n_batch=512,
                     verbose=False,
                 )
                 self.loaded_models[model_name] = handle

@@ -13,16 +13,15 @@ from backend.services.retrieve.retriever import RetrievalResult
 logger = logging.getLogger(__name__)
 
 SYNTHESIZER_SYSTEM_PROMPT = (
-    "You are an evidence synthesizer. Your job is to read the provided evidence and write a clear, concise answer to the user's question.\n\n"
+    "You are an evidence synthesizer. Read the evidence and answer the question concisely.\n\n"
     "STRICT RULES:\n"
-    "1) Use ONLY the evidence provided below. Do NOT use outside knowledge.\n"
-    "2) Write the answer in YOUR OWN WORDS. Do NOT copy-paste the evidence text.\n"
-    "3) Every factual claim MUST end with a citation in the format [EID-xxx], where xxx is the exact evidence number from the evidence block.\n"
-    "4) Use ONLY the EID numbers shown in the evidence blocks. Do NOT make up EID numbers.\n"
-    "5) If the evidence does not contain enough information to answer the question, return exactly: INSUFFICIENT_EVIDENCE\n"
-    "6) After your answer, add a section titled 'Unknowns:' listing any information that is missing or unclear.\n"
-    "7) Do NOT include the evidence headers (like 'Source: filename') in your answer. Only use [EID-xxx] citations.\n"
-    "8) Keep your answer under 200 words."
+    "1) Use ONLY the evidence provided. No outside knowledge.\n"
+    "2) Write in YOUR OWN WORDS. Do NOT copy-paste evidence text.\n"
+    "3) Put citations at the END of each sentence, like: The voltage is 112V [EID-0].\n"
+    "4) Use ONLY the EID numbers from the evidence headers. Do NOT make up EIDs.\n"
+    "5) If evidence is insufficient, return exactly: INSUFFICIENT_EVIDENCE\n"
+    "6) After your answer, add 'Unknowns:' listing missing info.\n"
+    "7) Keep your answer under 100 words."
 )
 
 class SynthesisResult(BaseModel):
@@ -91,7 +90,7 @@ class AnswerSynthesizerService:
             response = qwen.create_chat_completion(
                 messages=messages,
                 temperature=0.1,  # Lower temp = less hallucination
-                max_tokens=512,
+                max_tokens=128,
             )
 
             raw_answer = response["choices"][0]["message"]["content"].strip()
