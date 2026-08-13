@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import sys
 import time
 import gc
+import mimetypes
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List
@@ -34,21 +36,36 @@ class QueryResult:
     evidence_count: int = 0
 
 
+def _file_hash(path: Path) -> str:
+    """Compute MD5 hex digest of a file for Source.file_hash."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _file_type(path: Path) -> str:
+    """Determine file_type string from extension."""
+    mime, _ = mimetypes.guess_type(str(path))
+    return mime or f"application/{path.suffix.lstrip('.')}"
+
+
 async def main():
     print("=" * 70)
-    print("AETHER END-TO-END TEST — OPTIMIZED")
+    print("AETHER END-TO-END TEST — DB PERSISTENCE")
     print("=" * 70)
 
     # ========== STEP 0: LOAD EMBEDDINGS FIRST (Windows DLL conflict fix) ==========
-    print("\n[0/4] Loading embedding model first...")
+    print("\n[0/5] Loading embedding model first...")
     t0 = time.time()
     embedder = EmbeddingService()
     # Force model load now
     _ = embedder.embed_texts(["warmup"])
     print(f"   ✅ Embeddings ready ({(time.time()-t0)*1000:.0f}ms)")
 
-    # ========== STEP 1: INGEST ==========
-    print("\n[1/4] Ingesting demo_bundle...")
+    # ========== STEP 1: INGEST + PERSIST TO SQLITE ==========
+    print("\n[1/5] Ingesting demo_bundle + persisting to SQLite...")
     router = IngestRouter()
     faiss = FAISSIndexService(dim=1024)
 
@@ -57,32 +74,83 @@ async def main():
         print(f"   ❌ demo_bundle not found at {demo_dir.absolute()}")
         return
 
-    all_chunks = []
+    # --- Create DB schema ---
+    from backend.models.database import Base, engine, AsyncSessionLocal
+    from backend.models.source import Source
+    from backend.models.evidence import EvidenceChunk
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    print("   ✅ SQLite schema created")
+
+    # --- Ingest files and persist ---
+    all_chunks = []           # IngestChunk objects (from extractors)
+    db_chunk_ids: List[int] = []  # DB primary keys after insert
+    file_chunks_map = {}      # file_path -> list of IngestChunks
+
     for file_path in sorted(demo_dir.iterdir()):
         if file_path.is_file():
             chunks = await router.process_file(file_path)
+            file_chunks_map[file_path] = chunks
             all_chunks.extend(chunks)
             print(f"   📄 {file_path.name:<35} → {len(chunks)} chunks")
 
     print(f"   Total: {len(all_chunks)} chunks")
 
-    # ========== STEP 2: INDEX ==========
-    print("\n[2/4] Embedding + FAISS indexing...")
+    # --- Write Source + EvidenceChunk records to SQLite ---
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            for file_path, chunks in file_chunks_map.items():
+                # Create Source record
+                source = Source(
+                    filename=file_path.name,
+                    file_type=_file_type(file_path),
+                    file_path=str(file_path.absolute()),
+                    file_hash=_file_hash(file_path),
+                    size_bytes=file_path.stat().st_size,
+                    status="indexed",
+                )
+                session.add(source)
+                await session.flush()  # Assigns source.id
+
+                # Create EvidenceChunk records
+                for chunk in chunks:
+                    ec = EvidenceChunk(
+                        source_id=source.id,
+                        chunk_index=chunk.chunk_index,
+                        content=chunk.text,
+                        modality=chunk.modality,
+                        page_number=chunk.page_number,
+                    )
+                    session.add(ec)
+                    await session.flush()  # Assigns ec.id
+                    db_chunk_ids.append(ec.id)
+
+    print(f"   ✅ {len(db_chunk_ids)} chunks persisted to SQLite")
+
+    # ========== STEP 2: INDEX (using DB primary keys) ==========
+    print("\n[2/5] Embedding + FAISS indexing...")
     texts = [c.text for c in all_chunks]
     vectors = embedder.embed_texts(texts)
-    ids = list(range(len(vectors)))
-    faiss.add_vectors(vectors, ids)
-    print(f"   ✅ {faiss._index.ntotal} vectors indexed")
+    faiss.add_vectors(vectors, db_chunk_ids)
+    print(f"   ✅ {faiss._index.ntotal} vectors indexed (IDs: {db_chunk_ids[0]}..{db_chunk_ids[-1]})")
 
     # ========== STEP 2b: BM25 INDEX ==========
-    print("\n[2b/4] Building BM25 index...")
-    from services.index.bm25_index import bm25_index_service
-    bm25_items = [(idx, chunk.text) for idx, chunk in enumerate(all_chunks)]
+    print("\n[2b/5] Building BM25 index...")
+    from backend.services.index.bm25_index import bm25_index_service
+    bm25_items = [(db_id, chunk.text) for db_id, chunk in zip(db_chunk_ids, all_chunks)]
     bm25_index_service.build_index(bm25_items)
     print(f"   ✅ BM25 index built with {len(bm25_items)} documents")
 
+    # ========== STEP 2c: SAVE INDICES TO DISK ==========
+    print("\n[2c/5] Saving indices to disk...")
+    faiss.save()
+    print(f"   ✅ FAISS index saved to {faiss.index_path}")
+    bm25_index_service.save()
+    print(f"   ✅ BM25 index saved to ./data/bm25_index.pkl")
+
     # ========== STEP 3: PRE-LOAD LLM MODELS (after embeddings are loaded) ==========
-    print("\n[3/4] Pre-loading LLM models...")
+    print("\n[3/5] Pre-loading LLM models...")
     t0 = time.time()
     granite = model_manager.get("granite")
     print(f"   ✅ Granite ready  ({(time.time()-t0)*1000:.0f}ms)")
@@ -104,7 +172,7 @@ async def main():
     )
     print("   ✅ Warm-up complete")
 
-    # ========== STEP 4: QUERY LOOP ==========
+    # ========== STEP 4: QUERY LOOP (evidence loaded from SQLite) ==========
     queries = [
         "What is the voltage reading for Panel A-001?",
         "What caused the voltage fluctuation on March 15?",
@@ -113,7 +181,7 @@ async def main():
         "Who was the inspector for Panel B-002?",
     ]
 
-    print("\n[4/4] Running queries...")
+    print("\n[4/5] Running queries (evidence from SQLite)...")
     print("-" * 70)
 
     planner = QueryPlannerService()
@@ -136,21 +204,32 @@ async def main():
             query_vec = embedder.embed_texts([query])[0]
             distances, indices = faiss.search(query_vec, k=5)
 
+            # Load evidence from SQLite using DB primary keys
             evidence = []
-            for rank, (dist, idx) in enumerate(zip(distances, indices)):
-                chunk = all_chunks[idx]
-                # FIX #1: No leading zeros — 3B model strips them and causes mismatch
-                eid = f"EID-{idx}"
-                evidence.append(RetrievalResult(
-                    evidence_id=eid,
-                    text=chunk.text,
-                    source_name=Path(chunk.source_path).name,
-                    page_number=chunk.page_number,
-                    score=float(dist),
-                    reason=f"FAISS rank {rank+1}"
-                ))
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select as sa_select
+
+                for rank, (dist, db_id) in enumerate(zip(distances, indices)):
+                    stmt = (
+                        sa_select(EvidenceChunk, Source.filename)
+                        .join(Source, EvidenceChunk.source_id == Source.id)
+                        .where(EvidenceChunk.id == db_id)
+                    )
+                    row = (await session.execute(stmt)).first()
+                    if row:
+                        chunk_row, source_filename = row
+                        eid = f"EID-{db_id}"
+                        evidence.append(RetrievalResult(
+                            evidence_id=eid,
+                            text=chunk_row.content,
+                            source_name=source_filename,
+                            page_number=chunk_row.page_number,
+                            score=float(dist),
+                            reason=f"FAISS rank {rank+1}"
+                        ))
+
             retrieve_ms = (time.time() - t0) * 1000
-            print(f"   🔍 {len(evidence)} evidence pieces ({retrieve_ms:.0f}ms)")
+            print(f"   🔍 {len(evidence)} evidence pieces from DB ({retrieve_ms:.0f}ms)")
 
             # --- SYNTHESIZE ---
             t0 = time.time()
@@ -232,10 +311,11 @@ async def main():
     else:
         print("No successful queries.")
 
-    # Cleanup
-    print("\n[5/4] Releasing models...")
+    # ========== CLEANUP ==========
+    print("\n[5/5] Releasing models + closing DB...")
     model_manager.release_batch("qwen")
     gc.collect()
+    await engine.dispose()
     print("✅ Done")
 
     print("\n" + "=" * 70)

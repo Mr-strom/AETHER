@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import logging
+import pickle
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from rank_bm25 import BM25Okapi
 
+from backend.app.config import settings
+
 logger = logging.getLogger(__name__)
+
+# Default persistence path for the BM25 index
+BM25_INDEX_PATH = settings.DATA_DIR / "bm25_index.pkl"
 
 
 class BM25IndexService:
@@ -79,6 +86,70 @@ class BM25IndexService:
         logger.debug("BM25 search for '%s': %d results (top_k=%d).", query, len(results), top_k)
         return results
 
+    def save(self, path: Path | None = None) -> None:
+        """Persist the BM25 index data to disk using pickle.
+
+        Saves ``(corpus_ids, corpus_tokens)`` so the BM25Okapi scorer
+        can be rebuilt on load without re-tokenizing the entire corpus.
+
+        Args:
+            path: Override for the save file path.
+                Defaults to ``./data/bm25_index.pkl``.
+        """
+        target = Path(path or BM25_INDEX_PATH)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        if not self.corpus_ids:
+            logger.warning("Nothing to save: BM25 index is empty.")
+            return
+
+        payload = {
+            "corpus_ids": self.corpus_ids,
+            "corpus_tokens": self.corpus_tokens,
+        }
+
+        with open(target, "wb") as f:
+            pickle.dump(payload, f)
+
+        logger.info(
+            "BM25 index saved to '%s' (%d documents).",
+            target,
+            len(self.corpus_ids),
+        )
+
+    def load(self, path: Path | None = None) -> None:
+        """Load a previously saved BM25 index from disk.
+
+        Rebuilds the ``BM25Okapi`` scorer from the saved token lists.
+
+        Args:
+            path: Path to the ``.pkl`` file.
+
+        Raises:
+            FileNotFoundError: If the index file does not exist.
+        """
+        target = Path(path or BM25_INDEX_PATH)
+
+        if not target.exists():
+            raise FileNotFoundError(f"BM25 index file not found: {target}")
+
+        with open(target, "rb") as f:
+            payload = pickle.load(f)
+
+        self.corpus_ids = payload["corpus_ids"]
+        self.corpus_tokens = payload["corpus_tokens"]
+
+        if self.corpus_tokens:
+            self._bm25 = BM25Okapi(self.corpus_tokens)
+        else:
+            self._bm25 = None
+
+        logger.info(
+            "BM25 index loaded from '%s' (%d documents).",
+            target,
+            len(self.corpus_ids),
+        )
+
     # ------------------------------------------------------------------
     # Internal Helpers
     # ------------------------------------------------------------------
@@ -90,3 +161,4 @@ class BM25IndexService:
 
 
 bm25_index_service = BM25IndexService()
+
