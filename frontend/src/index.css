@@ -1,28 +1,112 @@
+@import '@fontsource/hanken-grotesk/400.css';
+@import '@fontsource/hanken-grotesk/500.css';
+@import '@fontsource/hanken-grotesk/600.css';
+@import '@fontsource/hanken-grotesk/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/Geist-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/Geist-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist';
+  src: url('/fonts/Geist-SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-display: swap;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   body {
-    @apply bg-slate-950 text-slate-100 font-sans;
+    @apply bg-aether-bg text-gray-200 font-body;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  #root {
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2a2f3d;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a3f4d;
   }
 }
 
-/* Custom Scrollbars */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
+@layer components {
+  .aether-input {
+    @apply w-full bg-aether-surface border border-aether-border rounded-xl
+           px-4 py-3 text-gray-200 placeholder-neutral
+           font-body text-sm
+           focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30
+           transition-all duration-200;
+  }
 
-::-webkit-scrollbar-track {
-  background: #0f172a;
-}
+  .aether-btn-primary {
+    @apply flex items-center justify-center
+           bg-accent-blue hover:bg-blue-600
+           text-white rounded-full
+           transition-all duration-200
+           active:scale-95;
+  }
 
-::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 4px;
-}
+  .aether-card {
+    @apply bg-aether-card border border-aether-border rounded-xl p-4
+           transition-all duration-200;
+  }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  .aether-badge {
+    @apply inline-flex items-center px-2 py-0.5
+           rounded-md text-xs font-mono font-medium
+           cursor-pointer transition-all duration-150;
+  }
+
+  .eid-badge {
+    @apply aether-badge bg-accent-blue/20 text-accent-blue
+           hover:bg-accent-blue/30;
+  }
+
+  .confidence-high {
+    @apply text-accent-green;
+  }
+  .confidence-medium {
+    @apply text-accent-yellow;
+  }
+  .confidence-low {
+    @apply text-accent-red;
+  }
 }

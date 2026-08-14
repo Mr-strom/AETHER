@@ -1,47 +1,80 @@
 import axios from 'axios';
-import { Source, EvidenceChunk, SystemStatus, ConflictGraphData } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  timeout: 120000,
+  headers: { 'Content-Type': 'application/json' },
 });
 
-export const fetchHealth = async () => {
-  const response = await api.get('/health');
-  return response.data;
-};
+export interface QueryResponse {
+  query_id: number;
+  query: string;
+  answer: string;
+  citations: string[];
+  confidence: string;
+  confidence_score: number;
+  response_time_ms: number;
+  latency_ms: number;
+  model_used: string;
+  evidence: EvidencePiece[];
+  created_at: string;
+}
 
-export const fetchSystemStatus = async (): Promise<SystemStatus> => {
-  const response = await api.get('/system/status');
-  return response.data;
-};
+export interface EvidencePiece {
+  id: number;
+  source_id: number;
+  chunk_index: number;
+  content: string;
+  modality: string;
+  page_number: number | null;
+  confidence_score: number;
+  metadata_json: {
+    source_name: string;
+    reason: string;
+    evidence_id: string;
+  };
+}
 
-export const fetchSources = async (): Promise<{ total: number; sources: Source[] }> => {
-  const response = await api.get('/sources');
-  return response.data;
-};
+export interface AirgapResult {
+  all_green: boolean;
+  signature_valid: boolean;
+  network_isolated: boolean;
+  attestation_hash: string;
+  timestamp: string;
+  errors: string[];
+  warnings: string[];
+}
 
-export const uploadSourceFile = async (file: File): Promise<Source> => {
-  const formData = new FormData();
-  formData.append('file', file);
-  const response = await api.post('/sources/upload', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
-  return response.data;
-};
+export interface SourceItem {
+  id: number;
+  filename: string;
+  file_type: string;
+  file_path: string;
+  file_hash: string;
+  size_bytes: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
 
-export const fetchConflictGraph = async (): Promise<ConflictGraphData> => {
-  const response = await api.get('/evidence/graph/conflicts');
-  return response.data;
-};
+export async function submitQuery(query: string): Promise<QueryResponse> {
+  const res = await api.post<QueryResponse>('/query', { query });
+  return res.data;
+}
 
-export const sendQuery = async (query: string, topK: number = 5) => {
-  const response = await api.post('/query', { query, top_k: topK });
-  return response.data;
-};
+export async function getEvidence(evidenceId: number): Promise<EvidencePiece> {
+  const res = await api.get<EvidencePiece>(`/evidence/${evidenceId}`);
+  return res.data;
+}
+
+export async function verifyAirgap(): Promise<AirgapResult> {
+  const res = await api.get<AirgapResult>('/system/verify-airgap');
+  return res.data;
+}
+
+export async function listSources(): Promise<{ total: number; sources: SourceItem[] }> {
+  const res = await api.get('/sources');
+  return res.data;
+}
 
 export default api;
