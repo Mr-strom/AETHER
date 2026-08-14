@@ -110,3 +110,19 @@
     @apply text-accent-red;
   }
 }
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .w-sidebar { width: 0 !important; }
+  .w-sources { width: 100% !important; position: fixed; bottom: 0; height: 40vh; z-index: 30; }
+}
+

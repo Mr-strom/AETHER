@@ -5,6 +5,8 @@ from backend.models.source import Source
 from backend.models.evidence import EvidenceChunk
 from backend.models.relation import EvidenceRelation
 from backend.models.answer import QueryAnswer
+from backend.models.conversation import Conversation
+from backend.models.message import ChatMessage
 
 __all__ = [
     "Base",
@@ -14,4 +16,7 @@ __all__ = [
     "EvidenceChunk",
     "EvidenceRelation",
     "QueryAnswer",
+    "Conversation",
+    "ChatMessage",
 ]
+

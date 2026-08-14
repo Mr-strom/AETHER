@@ -1,11 +1,20 @@
 import React, { useState, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import LandingPage from './components/LandingPage';
 import TopBar from './components/TopBar';
-import Sidebar, { ChatHistoryItem } from './components/Sidebar';
+import Sidebar from './components/Sidebar';
 import ChatArea, { Message } from './components/ChatArea';
 import SourcesPanel from './components/SourcesPanel';
 import { ThinkingStep } from './components/ThinkingBubble';
-import { streamQuery, EvidencePiece, QueryResponse, listSources } from './api/client';
+import {
+  streamQuery,
+  EvidencePiece,
+  QueryResponse,
+  listSources,
+  createConversation,
+  addMessage,
+  getConversationMessages,
+} from './api/client';
 
 type AppView = 'landing' | 'chat';
 
@@ -19,17 +28,25 @@ const App: React.FC = () => {
   const [lastQueryTime, setLastQueryTime] = useState<string | null>(null);
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
   const [currentThinkingStep, setCurrentThinkingStep] = useState<string | null>(null);
-  const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>([
-    { id: '1', title: 'Sector 7G Structural Integ...', timestamp: '2:45 AM' },
-    { id: '2', title: 'Q3 Anomaly Reports Revi...', timestamp: '1:30 AM' },
-    { id: '3', title: 'Maintenance Logs - Array ...', timestamp: '12:15 AM' },
-  ]);
-  const [activeChatId, setActiveChatId] = useState<string | null>('1');
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [activeConvDbId, setActiveConvDbId] = useState<number | null>(null);
 
-  // Ref for SSE cleanup
   const cleanupRef = useRef<(() => void) | null>(null);
 
-  const handleQuery = useCallback((query: string) => {
+  // Persist conversation to backend
+  const ensureConversation = useCallback(async (): Promise<number | null> => {
+    if (activeConvDbId) return activeConvDbId;
+    try {
+      const conv = await createConversation();
+      setActiveConvDbId(conv.id);
+      setActiveChatId(`conv-${conv.id}`);
+      return conv.id;
+    } catch {
+      return null;
+    }
+  }, [activeConvDbId]);
+
+  const handleQuery = useCallback(async (query: string) => {
     setIsLoading(true);
     setView('chat');
     setThinkingSteps([]);
@@ -38,69 +55,76 @@ const App: React.FC = () => {
     // Add user message
     setMessages((prev) => [...prev, { role: 'user', text: query }]);
 
-    // Start SSE stream
+    // Persist user message
+    const convId = await ensureConversation();
+    if (convId) {
+      addMessage(convId, { role: 'user', content: query }).catch(() => {});
+    }
+
     const cleanup = streamQuery(
       query,
-      // onStatus
       (update) => {
         setCurrentThinkingStep(update.step);
         setThinkingSteps((prev) => {
-          // Mark previous steps as completed
           const updated = prev.map((s) =>
             s.step !== update.step ? { ...s, completed: true } : s
           );
-          // Add new step if not already present
-          const exists = updated.find((s) => s.step === update.step);
-          if (!exists) {
-            updated.push({
-              step: update.step,
-              message: update.message,
-              completed: false,
-            });
+          if (!updated.find((s) => s.step === update.step)) {
+            updated.push({ step: update.step, message: update.message, completed: false });
           }
           return updated;
         });
       },
-      // onComplete
       (response: QueryResponse) => {
-        // Mark all thinking steps as complete
         setThinkingSteps((prev) => prev.map((s) => ({ ...s, completed: true })));
         setCurrentThinkingStep(null);
 
-        // Add aether response message
         setMessages((prev) => [
           ...prev,
-          { role: 'aether', text: response.answer, response },
+          { role: 'aether', text: response.answer, response, isNew: true },
         ]);
 
-        // Update evidence panel
+        // Mark previous messages as not new (disable typewriter)
+        setTimeout(() => {
+          setMessages((prev) =>
+            prev.map((m) => (m.isNew ? { ...m, isNew: false } : m))
+          );
+        }, 30000); // keep typewriter active for 30s max
+
         setEvidence(response.evidence || []);
 
-        // Update last query time
         const now = new Date();
-        setLastQueryTime(
-          now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-        );
+        setLastQueryTime(now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
 
-        // Add to chat history
-        const newChat: ChatHistoryItem = {
-          id: Date.now().toString(),
-          title: query.length > 30 ? query.slice(0, 30) + '...' : query,
-          timestamp: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-        };
-        setChatHistory((prev) => [newChat, ...prev]);
-        setActiveChatId(newChat.id);
+        // Persist aether response
+        if (convId) {
+          addMessage(convId, {
+            role: 'aether',
+            content: response.answer,
+            citations_json: response.citations,
+            confidence: response.confidence,
+            latency_ms: response.latency_ms,
+            evidence_json: response.evidence,
+          }).catch(() => {});
+        }
+
         setIsLoading(false);
         setThinkingSteps([]);
       },
-      // onError
       (error: string) => {
+        // Friendly error messages
+        let friendlyMsg: string;
+        if (error.includes('Connection') || error.includes('connect')) {
+          friendlyMsg = '🔌 Unable to reach the AETHER backend. Please ensure the server is running on port 8000.';
+        } else if (error.includes('timeout') || error.includes('Timeout')) {
+          friendlyMsg = '⏱️ The analysis is taking longer than expected. Please try a more specific question.';
+        } else {
+          friendlyMsg = `Something went wrong: ${error}`;
+        }
+
         setMessages((prev) => [
           ...prev,
-          {
-            role: 'aether',
-            text: `Error: ${error}. Make sure the backend is running on port 8000.`,
-          },
+          { role: 'aether', text: friendlyMsg },
         ]);
         setIsLoading(false);
         setThinkingSteps([]);
@@ -109,10 +133,19 @@ const App: React.FC = () => {
     );
 
     cleanupRef.current = cleanup;
+  }, [ensureConversation]);
+
+  const handleStopGenerating = useCallback(() => {
+    if (cleanupRef.current) {
+      cleanupRef.current();
+      cleanupRef.current = null;
+    }
+    setIsLoading(false);
+    setThinkingSteps([]);
+    setCurrentThinkingStep(null);
   }, []);
 
   const handleNewChat = useCallback(() => {
-    // Cancel any in-flight SSE stream
     if (cleanupRef.current) {
       cleanupRef.current();
       cleanupRef.current = null;
@@ -123,41 +156,87 @@ const App: React.FC = () => {
     setThinkingSteps([]);
     setCurrentThinkingStep(null);
     setIsLoading(false);
-    setView('landing');
+    setActiveConvDbId(null);
     setActiveChatId(null);
+    setView('landing');
+  }, []);
+
+  const handleSelectChat = useCallback(async (id: string, dbId?: number) => {
+    setActiveChatId(id);
+    if (dbId) {
+      setActiveConvDbId(dbId);
+      try {
+        const msgs = await getConversationMessages(dbId);
+        setMessages(
+          msgs.map((m) => ({
+            role: m.role as 'user' | 'aether',
+            text: m.content,
+            response: m.role === 'aether' && m.evidence_json ? {
+              query_id: 0,
+              query: '',
+              answer: m.content,
+              citations: m.citations_json || [],
+              confidence: m.confidence || 'medium',
+              confidence_score: 0,
+              response_time_ms: m.latency_ms || 0,
+              latency_ms: m.latency_ms || 0,
+              model_used: 'Qwen2.5-3B',
+              evidence: m.evidence_json || [],
+              created_at: m.created_at,
+            } : undefined,
+          }))
+        );
+        // Load evidence from last aether message
+        const lastAether = msgs.filter((m) => m.role === 'aether').pop();
+        if (lastAether?.evidence_json) {
+          setEvidence(lastAether.evidence_json);
+        }
+        setView('chat');
+      } catch {
+        console.error('Failed to load conversation');
+      }
+    }
   }, []);
 
   const handleCitationClick = useCallback((eid: string) => {
     setHighlightedEid(eid);
-    const el = document.getElementById(`source-card-${eid}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    document.getElementById(`source-card-${eid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setTimeout(() => setHighlightedEid(null), 3000);
   }, []);
 
   const handleFilesUploaded = useCallback(() => {
-    // Refresh sources list after upload
-    listSources().then((data) => {
-      // Evidence panel will update on next query
-      console.log(`Sources updated: ${data.total} total`);
-    }).catch(() => {});
+    listSources().then((d) => console.log(`Sources: ${d.total}`)).catch(() => {});
   }, []);
 
   const handleUploadsCleared = useCallback(() => {
-    // Reset evidence panel
     setEvidence([]);
-    console.log('Uploads cleared');
   }, []);
 
   // LANDING VIEW
   if (view === 'landing') {
-    return <LandingPage onSubmit={handleQuery} isLoading={isLoading} />;
+    return (
+      <AnimatePresence mode="wait">
+        <motion.div
+          key="landing"
+          initial={{ opacity: 1 }}
+          exit={{ opacity: 0, scale: 0.95 }}
+          transition={{ duration: 0.4 }}
+        >
+          <LandingPage onSubmit={handleQuery} isLoading={isLoading} />
+        </motion.div>
+      </AnimatePresence>
+    );
   }
 
   // CHAT VIEW
   return (
-    <div className="h-screen w-screen flex flex-col bg-aether-bg overflow-hidden">
+    <motion.div
+      key="chat"
+      initial={{ opacity: 0, x: 40 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.5, ease: 'easeOut' }}
+      className="h-screen w-screen flex flex-col bg-aether-bg overflow-hidden"
+    >
       <TopBar
         onToggleSidebar={() => setSidebarOpen((p) => !p)}
         lastQueryTime={lastQueryTime}
@@ -165,10 +244,9 @@ const App: React.FC = () => {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar
           isOpen={sidebarOpen}
-          chatHistory={chatHistory}
           activeChatId={activeChatId}
           onNewChat={handleNewChat}
-          onSelectChat={setActiveChatId}
+          onSelectChat={handleSelectChat}
           onUploadsCleared={handleUploadsCleared}
         />
         <ChatArea
@@ -179,10 +257,17 @@ const App: React.FC = () => {
           onSubmit={handleQuery}
           onCitationClick={handleCitationClick}
           onFilesUploaded={handleFilesUploaded}
+          onStopGenerating={handleStopGenerating}
         />
-        <SourcesPanel evidence={evidence} highlightedEid={highlightedEid} />
+        <motion.div
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.2, duration: 0.4 }}
+        >
+          <SourcesPanel evidence={evidence} highlightedEid={highlightedEid} isLoading={isLoading} />
+        </motion.div>
       </div>
-    </div>
+    </motion.div>
   );
 };
 

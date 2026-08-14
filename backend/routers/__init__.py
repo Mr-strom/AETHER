@@ -5,6 +5,7 @@ from backend.routers.query import router as query_router
 from backend.routers.evidence import router as evidence_router
 from backend.routers.system import router as system_router
 from backend.routers.evaluate import router as evaluate_router
+from backend.routers.conversations import router as conversations_router
 
 __all__ = [
     "sources_router",
@@ -12,4 +13,6 @@ __all__ = [
     "evidence_router",
     "system_router",
     "evaluate_router",
+    "conversations_router",
 ]
+

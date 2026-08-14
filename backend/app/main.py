@@ -16,6 +16,7 @@ from backend.routers import (
     evidence_router,
     system_router,
     evaluate_router,
+    conversations_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,7 @@ app.include_router(query_router)
 app.include_router(evidence_router)
 app.include_router(system_router)
 app.include_router(evaluate_router)
+app.include_router(conversations_router)
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["system"])

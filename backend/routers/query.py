@@ -30,7 +30,8 @@ from backend.services.index.faiss_index import faiss_index_service
 from backend.services.retrieve.conflict_detector import conflict_detector
 from backend.services.retrieve.planner import query_planner_service
 from backend.services.retrieve.retriever import RetrievalResult
-from backend.services.retrieve.synthesizer import answer_synthesizer_service
+from backend.services.retrieve.synthesizer import answer_synthesizer_service, SynthesisResult
+from backend.services.synthesis.post_processor import post_processor
 from backend.utils.validators import validate_citations, evidence_quality_score
 
 logger = logging.getLogger(__name__)
@@ -187,7 +188,7 @@ async def _run_pipeline(
     await emit("conflicts", "Checking for cross-source conflicts...")
     detected_conflicts = conflict_detector.detect(retrieved_evidence)
 
-    # Step 4: Synthesis
+    # Step 4: Synthesis + Citation Guard (with retry)
     await emit("synthesizing", "Generating answer with citations...")
     synthesis = await answer_synthesizer_service.synthesize(
         evidence=retrieved_evidence,
@@ -196,17 +197,54 @@ async def _run_pipeline(
         conflicts=detected_conflicts if detected_conflicts else None,
     )
 
-    # Step 5: Validation
+    # Step 5: Post-processor citation guard
     await emit("validating", "Verifying citation accuracy...")
+    guard_result = post_processor.process(synthesis.answer_text, retrieved_evidence)
+
+    if not guard_result["safe"]:
+        logger.warning(
+            "Citation guard FAILED (attempt 1): reason=%s, missing=%s",
+            guard_result["reason"], guard_result.get("missing_eids", []),
+        )
+        # Retry once with stricter prompt
+        await emit("validating", "Re-generating with stricter citation rules...")
+        synthesis = await answer_synthesizer_service.synthesize(
+            evidence=retrieved_evidence,
+            query=query_text,
+            unload_after=False,
+            conflicts=detected_conflicts if detected_conflicts else None,
+        )
+        guard_result = post_processor.process(synthesis.answer_text, retrieved_evidence)
+
+        if not guard_result["safe"]:
+            logger.error(
+                "Citation guard FAILED (attempt 2): reason=%s. Replacing answer.",
+                guard_result["reason"],
+            )
+            synthesis = SynthesisResult(
+                answer_text=(
+                    "INSUFFICIENT_EVIDENCE: The generated response contained claims "
+                    "without valid evidence citations."
+                ),
+                cited_ids=[],
+                confidence="low",
+                conflicts_detected=synthesis.conflicts_detected,
+            )
+            guard_result = post_processor.process(synthesis.answer_text, retrieved_evidence)
+
+    # Legacy validation (no-op if guard passed)
     valid_eids = {item.evidence_id for item in retrieved_evidence}
     validate_citations(synthesis.answer_text, valid_eids)
 
     elapsed_ms = int((time.time() - start_time) * 1000)
 
-    return _build_response_dict(
+    response = _build_response_dict(
         query_text, synthesis, retrieved_evidence,
         elapsed_ms, hop_count, detected_conflicts,
     )
+    # Attach per_claim_scores to response
+    response["per_claim_scores"] = guard_result.get("per_claim_scores", [])
+    return response
 
 
 # ============================================================

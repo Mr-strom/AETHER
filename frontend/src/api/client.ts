@@ -6,6 +6,8 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// ---------- Types ----------
+
 export interface QueryResponse {
   query_id: number;
   query: string;
@@ -64,14 +66,51 @@ export interface StatusUpdate {
   message: string;
 }
 
-// ---- Standard query (POST) ----
+export interface ConversationItem {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ChatMessageItem {
+  id: number;
+  conversation_id: number;
+  role: string;
+  content: string;
+  citations_json: string[] | null;
+  confidence: string | null;
+  latency_ms: number | null;
+  evidence_json: EvidencePiece[] | null;
+  created_at: string;
+}
+
+// ---------- Retry logic ----------
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  onRetry?: (attempt: number, maxAttempts: number) => void,
+  maxAttempts: number = 3,
+): Promise<T> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === maxAttempts) throw err;
+      onRetry?.(attempt, maxAttempts);
+      await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
+    }
+  }
+  throw new Error('Retry exhausted');
+}
+
+// ---------- Query ----------
 
 export async function submitQuery(query: string): Promise<QueryResponse> {
   const res = await api.post<QueryResponse>('/query', { query });
   return res.data;
 }
-
-// ---- SSE streaming query ----
 
 export function streamQuery(
   query: string,
@@ -84,15 +123,13 @@ export function streamQuery(
 
   eventSource.addEventListener('status', (event: MessageEvent) => {
     try {
-      const data = JSON.parse(event.data) as StatusUpdate;
-      onStatus(data);
-    } catch { /* ignore parse errors */ }
+      onStatus(JSON.parse(event.data) as StatusUpdate);
+    } catch { /* ignore */ }
   });
 
   eventSource.addEventListener('complete', (event: MessageEvent) => {
     try {
-      const data = JSON.parse(event.data) as QueryResponse;
-      onComplete(data);
+      onComplete(JSON.parse(event.data) as QueryResponse);
     } catch { /* ignore */ }
     eventSource.close();
   });
@@ -100,8 +137,7 @@ export function streamQuery(
   eventSource.addEventListener('error', (event: MessageEvent) => {
     if (event.data) {
       try {
-        const data = JSON.parse(event.data);
-        onError(data.error || 'Unknown error');
+        onError(JSON.parse(event.data).error || 'Unknown error');
       } catch {
         onError('Stream error');
       }
@@ -112,16 +148,14 @@ export function streamQuery(
   });
 
   eventSource.onerror = () => {
-    // EventSource auto-reconnects; close explicitly if we get a persistent error
     eventSource.close();
     onError('Connection to server lost');
   };
 
-  // Return cleanup function
   return () => eventSource.close();
 }
 
-// ---- File upload ----
+// ---------- File Upload ----------
 
 export async function uploadFile(
   file: File,
@@ -129,26 +163,54 @@ export async function uploadFile(
 ): Promise<{ source_id: number; filename: string; chunks_count: number; status: string }> {
   const formData = new FormData();
   formData.append('file', file);
-
   const res = await api.post('/sources/upload-file', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (e) => {
-      if (onProgress && e.total) {
-        onProgress(Math.round((e.loaded * 100) / e.total));
-      }
+      if (onProgress && e.total) onProgress(Math.round((e.loaded * 100) / e.total));
     },
   });
   return res.data;
 }
-
-// ---- Clear uploads ----
 
 export async function clearUploads(): Promise<{ cleared_count: number; remaining_sources: number }> {
   const res = await api.post('/sources/clear-uploads');
   return res.data;
 }
 
-// ---- Evidence & Sources ----
+// ---------- Conversations ----------
+
+export async function listConversations(): Promise<{ total: number; conversations: ConversationItem[] }> {
+  const res = await api.get('/conversations');
+  return res.data;
+}
+
+export async function createConversation(): Promise<ConversationItem> {
+  const res = await api.post('/conversations');
+  return res.data;
+}
+
+export async function getConversationMessages(conversationId: number): Promise<ChatMessageItem[]> {
+  const res = await api.get(`/conversations/${conversationId}/messages`);
+  return res.data;
+}
+
+export async function addMessage(conversationId: number, msg: {
+  role: string;
+  content: string;
+  citations_json?: string[] | null;
+  confidence?: string | null;
+  latency_ms?: number | null;
+  evidence_json?: EvidencePiece[] | null;
+}): Promise<ChatMessageItem> {
+  const res = await api.post(`/conversations/${conversationId}/messages`, msg);
+  return res.data;
+}
+
+export async function deleteConversation(conversationId: number): Promise<void> {
+  await api.delete(`/conversations/${conversationId}`);
+}
+
+// ---------- Evidence & Sources ----------
 
 export async function getEvidence(evidenceId: number): Promise<EvidencePiece> {
   const res = await api.get<EvidencePiece>(`/evidence/${evidenceId}`);
@@ -156,8 +218,10 @@ export async function getEvidence(evidenceId: number): Promise<EvidencePiece> {
 }
 
 export async function verifyAirgap(): Promise<AirgapResult> {
-  const res = await api.get<AirgapResult>('/system/verify-airgap');
-  return res.data;
+  return withRetry(async () => {
+    const res = await api.get<AirgapResult>('/system/verify-airgap');
+    return res.data;
+  });
 }
 
 export async function listSources(): Promise<{ total: number; sources: SourceItem[] }> {
@@ -165,4 +229,5 @@ export async function listSources(): Promise<{ total: number; sources: SourceIte
   return res.data;
 }
 
+export { withRetry };
 export default api;
