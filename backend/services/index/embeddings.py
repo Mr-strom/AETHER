@@ -71,6 +71,10 @@ class EmbeddingService:
     # Public API
     # ------------------------------------------------------------------
 
+    def is_loaded(self) -> bool:
+        """Return True if the embedding model has been loaded."""
+        return self._model is not None
+
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Compute dense embeddings for a batch of text strings.
 

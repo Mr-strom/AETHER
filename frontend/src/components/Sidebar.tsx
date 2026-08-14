@@ -1,5 +1,6 @@
-import React from 'react';
-import { Plus, FileText } from 'lucide-react';
+import React, { useState } from 'react';
+import { Plus, FileText, Trash2 } from 'lucide-react';
+import { clearUploads } from '../api/client';
 
 export interface ChatHistoryItem {
   id: string;
@@ -13,6 +14,7 @@ interface SidebarProps {
   activeChatId: string | null;
   onNewChat: () => void;
   onSelectChat: (id: string) => void;
+  onUploadsCleared: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -21,7 +23,29 @@ const Sidebar: React.FC<SidebarProps> = ({
   activeChatId,
   onNewChat,
   onSelectChat,
+  onUploadsCleared,
 }) => {
+  const [clearing, setClearing] = useState(false);
+
+  const handleClearUploads = async () => {
+    const confirmed = window.confirm(
+      'This will remove all uploaded files and reset to demo data. Continue?'
+    );
+    if (!confirmed) return;
+
+    setClearing(true);
+    try {
+      const result = await clearUploads();
+      onUploadsCleared();
+      // Optional: show result in console for debugging
+      console.log(`Cleared ${result.cleared_count} uploads. ${result.remaining_sources} sources remain.`);
+    } catch (err) {
+      console.error('Clear uploads failed:', err);
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
     <aside
       className={`
@@ -38,10 +62,24 @@ const Sidebar: React.FC<SidebarProps> = ({
                      bg-aether-card border border-aether-border
                      text-gray-300 text-sm font-body
                      hover:bg-aether-hover hover:border-primary/30
-                     transition-all duration-200 mb-4"
+                     transition-all duration-200 mb-2"
         >
           <Plus size={16} className="text-primary" />
           <span>New Chat</span>
+        </button>
+
+        {/* Clear Uploads Button */}
+        <button
+          onClick={handleClearUploads}
+          disabled={clearing}
+          className="flex items-center gap-2 w-full px-3 py-1.5 rounded-lg
+                     text-neutral text-xs font-mono
+                     hover:bg-aether-card hover:text-accent-red
+                     transition-all duration-200 mb-4
+                     disabled:opacity-40"
+        >
+          <Trash2 size={12} />
+          <span>{clearing ? 'Clearing...' : '🗑️ Clear Uploads'}</span>
         </button>
 
         {/* Past Chats */}
