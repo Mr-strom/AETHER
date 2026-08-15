@@ -25,6 +25,7 @@ class EvidenceChunk(Base):
     timestamp_end: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     bbox_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     embedding_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    index_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Contextualized text for embedding + BM25
     confidence_score: Mapped[float] = mapped_column(Float, default=1.0)
     metadata_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

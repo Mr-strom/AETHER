@@ -23,11 +23,26 @@ class QueryPlan(BaseModel):
     requires_calculation: bool = Field(default=False)
 
 
+# Allowed modalities for this text-only system
+_ALLOWED_MODALITIES = {"text", "audio", "temporal", "mixed"}
+
 PLANNER_SYSTEM_PROMPT = (
-    "You are a query planner for an evidence retrieval system. Analyze the user's question and output a JSON plan. "
-    "Determine if the query needs text search, calculation, or temporal filtering. "
-    "Output format MUST be strictly JSON with keys: 'primary_modality' (string, default 'text'), "
-    "'sub_queries' (list of strings), 'filters' (object), 'requires_calculation' (boolean)."
+    "You are a query planner for a TEXT-ONLY evidence retrieval system. "
+    "Analyze the user's question and output a JSON plan.\n\n"
+    "RULES:\n"
+    "1) primary_modality MUST be one of: text, audio, temporal, mixed. "
+    "NEVER use 'image' — this system has NO vision capabilities.\n"
+    "2) If the query is a single word or very short phrase, default to 'text' "
+    "unless it explicitly mentions audio, voice notes, video, or timestamps.\n"
+    "3) sub_queries: break complex queries into 1-3 focused search strings.\n"
+    "4) Output ONLY valid JSON. No markdown, no explanation.\n\n"
+    "FEW-SHOT EXAMPLES:\n"
+    'Query: "model" → {"primary_modality": "text", "sub_queries": ["model"], "filters": {}, "requires_calculation": false}\n'
+    'Query: "what did the voice note say" → {"primary_modality": "audio", "sub_queries": ["voice note content"], "filters": {}, "requires_calculation": false}\n'
+    'Query: "diagram of the panel" → {"primary_modality": "text", "sub_queries": ["panel diagram description"], "filters": {}, "requires_calculation": false}\n'
+    'Query: "when did the failure happen" → {"primary_modality": "temporal", "sub_queries": ["failure event timestamp"], "filters": {}, "requires_calculation": false}\n\n'
+    "OUTPUT FORMAT (strict JSON):\n"
+    '{"primary_modality": "text", "sub_queries": [...], "filters": {}, "requires_calculation": false}'
 )
 
 REFORMULATION_PROMPT = (
@@ -150,8 +165,16 @@ class QueryPlannerService:
             if not isinstance(sub_queries, list) or not sub_queries:
                 sub_queries = [original_query]
 
+            # Enforce allowed modalities — reject "image" and any invalid value
+            raw_modality = str(data.get("primary_modality", "text")).lower().strip()
+            if raw_modality not in _ALLOWED_MODALITIES:
+                logger.warning(
+                    "Planner returned invalid modality '%s'. Forcing 'text'.", raw_modality
+                )
+                raw_modality = "text"
+
             return QueryPlan(
-                primary_modality=str(data.get("primary_modality", "text")),
+                primary_modality=raw_modality,
                 sub_queries=[str(sq) for sq in sub_queries],
                 filters=data.get("filters", {}) if isinstance(data.get("filters"), dict) else {},
                 requires_calculation=bool(data.get("requires_calculation", False)),

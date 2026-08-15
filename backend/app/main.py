@@ -31,6 +31,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Migrate: add index_text column to evidence_chunks if missing (SQLite compat)
+    await _migrate_add_index_text_column()
+
     # Load persisted indices (if they exist)
     _load_indices_on_startup()
 
@@ -47,6 +50,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Cleanup resources on shutdown
     await engine.dispose()
+
+
+async def _migrate_add_index_text_column() -> None:
+    """Add index_text column to evidence_chunks if it doesn't exist (SQLite migration)."""
+    try:
+        from sqlalchemy import text as sa_text, inspect as sa_inspect
+
+        def _check_and_add(connection):
+            inspector = sa_inspect(connection)
+            columns = [c["name"] for c in inspector.get_columns("evidence_chunks")]
+            if "index_text" not in columns:
+                connection.execute(sa_text("ALTER TABLE evidence_chunks ADD COLUMN index_text TEXT"))
+                logger.info("Migration: added 'index_text' column to evidence_chunks.")
+            else:
+                logger.debug("Migration: 'index_text' column already exists.")
+
+        async with engine.begin() as conn:
+            await conn.run_sync(_check_and_add)
+
+    except Exception as exc:
+        logger.warning("Migration for index_text column failed (may be new DB): %s", exc)
 
 
 def _load_indices_on_startup() -> None:

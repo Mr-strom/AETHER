@@ -103,6 +103,25 @@ async def _ingest_file_to_db(
     ingest_router = IngestRouter()
     chunks = await ingest_router.process_file(file_path)
 
+    # --- Contextual Retrieval: enrich chunks before embedding ---
+    try:
+        from backend.services.ingest.contextualizer import Contextualizer
+        raw_texts = [c.text for c in chunks if c.text]
+        if raw_texts:
+            contextualizer = Contextualizer()
+            ctx_texts = contextualizer.contextualize_document(raw_texts)
+            idx = 0
+            for chunk in chunks:
+                if chunk.text:
+                    chunk.index_text = ctx_texts[idx]
+                    idx += 1
+                else:
+                    chunk.index_text = chunk.text
+    except Exception as exc:
+        logger.warning("Contextualizer failed, using raw text: %s", exc)
+        for chunk in chunks:
+            chunk.index_text = chunk.text
+
     # Create Source record
     source = Source(
         filename=file_path.name,
@@ -123,6 +142,7 @@ async def _ingest_file_to_db(
             source_id=source.id,
             chunk_index=chunk.chunk_index,
             content=chunk.text,
+            index_text=chunk.index_text,
             modality=chunk.modality,
             page_number=chunk.page_number,
         )
@@ -130,17 +150,17 @@ async def _ingest_file_to_db(
         await db.flush()
         chunk_ids.append(ec.id)
 
-    # Index into FAISS + BM25
+    # Index into FAISS + BM25 (use index_text for better retrieval)
     if chunks and chunk_ids:
-        texts = [c.text for c in chunks]
+        texts = [c.index_text or c.text for c in chunks]
         vectors = embedding_service.embed_texts(texts)
         faiss_index_service.add_vectors(vectors, chunk_ids)
         faiss_index_service.save()
 
-        # Rebuild BM25 from all data
-        all_chunks_stmt = select(EvidenceChunk.id, EvidenceChunk.content)
+        # Rebuild BM25 from all data (prefer index_text)
+        all_chunks_stmt = select(EvidenceChunk.id, EvidenceChunk.index_text, EvidenceChunk.content)
         all_rows = (await db.execute(all_chunks_stmt)).all()
-        all_bm25 = [(row[0], row[1]) for row in all_rows]
+        all_bm25 = [(row[0], row[1] or row[2]) for row in all_rows]
         bm25_index_service.build_index(all_bm25)
         bm25_index_service.save()
 
@@ -219,16 +239,16 @@ async def clear_uploads(
         shutil.rmtree(UPLOADS_DIR, ignore_errors=True)
         UPLOADS_DIR.mkdir(exist_ok=True)
 
-    # Rebuild indices from remaining data
+    # Rebuild indices from remaining data (prefer index_text)
     remaining_stmt = (
-        select(EvidenceChunk.id, EvidenceChunk.content)
+        select(EvidenceChunk.id, EvidenceChunk.index_text, EvidenceChunk.content)
         .order_by(EvidenceChunk.id)
     )
     remaining = (await db.execute(remaining_stmt)).all()
 
     if remaining:
         chunk_ids = [row[0] for row in remaining]
-        texts = [row[1] for row in remaining]
+        texts = [row[1] or row[2] for row in remaining]
         vectors = embedding_service.embed_texts(texts)
         faiss_index_service.rebuild(vectors, chunk_ids)
         faiss_index_service.save()
@@ -297,6 +317,7 @@ async def upload_source(
                 source_id=source.id,
                 chunk_index=chunk.chunk_index,
                 content=chunk.text,
+                index_text=getattr(chunk, 'index_text', None) or chunk.text,
                 modality=chunk.modality,
                 page_number=chunk.page_number,
             )
@@ -305,14 +326,14 @@ async def upload_source(
             chunk_ids.append(ec.id)
 
         if chunks and chunk_ids:
-            texts = [c.text for c in chunks]
+            texts = [getattr(c, 'index_text', None) or c.text for c in chunks]
             vectors = embedding_service.embed_texts(texts)
             faiss_index_service.add_vectors(vectors, chunk_ids)
             faiss_index_service.save()
 
-            all_chunks_stmt = select(EvidenceChunk.id, EvidenceChunk.content)
+            all_chunks_stmt = select(EvidenceChunk.id, EvidenceChunk.index_text, EvidenceChunk.content)
             all_rows = (await db.execute(all_chunks_stmt)).all()
-            all_bm25 = [(row[0], row[1]) for row in all_rows]
+            all_bm25 = [(row[0], row[1] or row[2]) for row in all_rows]
             bm25_index_service.build_index(all_bm25)
             bm25_index_service.save()
 
@@ -359,12 +380,12 @@ async def delete_source(
     await db.flush()
 
     remaining = (await db.execute(
-        select(EvidenceChunk.id, EvidenceChunk.content).order_by(EvidenceChunk.id)
+        select(EvidenceChunk.id, EvidenceChunk.index_text, EvidenceChunk.content).order_by(EvidenceChunk.id)
     )).all()
 
     if remaining:
         chunk_ids = [row[0] for row in remaining]
-        texts = [row[1] for row in remaining]
+        texts = [row[1] or row[2] for row in remaining]
         vectors = embedding_service.embed_texts(texts)
         faiss_index_service.rebuild(vectors, chunk_ids)
         faiss_index_service.save()

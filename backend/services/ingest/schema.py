@@ -33,6 +33,7 @@ class IngestChunk:
     page_number: Optional[int] = None
     char_count: int = 0
     embedding_id: Optional[int] = None
+    index_text: Optional[str] = None  # Contextualized text for embedding + BM25; None = use text
     bbox: Optional[dict[str, float]] = None
     extra: dict[str, Any] = field(default_factory=dict)
 

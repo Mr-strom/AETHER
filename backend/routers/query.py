@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -84,6 +85,28 @@ def _build_response_dict(
     detected_conflicts: list,
 ) -> dict:
     """Build the response dict used by both POST and SSE endpoints."""
+
+    # ---- Sanitize answer: strip planner trace, debug lines ----
+    answer = synthesis.answer_text or ""
+    # Remove lines starting with [PLANNER], [TRACE], [DEBUG], or similar bracketed prefixes
+    sanitized_lines = []
+    for line in answer.split("\n"):
+        stripped = line.strip()
+        if re.match(r"^\[(PLANNER|TRACE|DEBUG|RETRIEVER|VALIDATOR|QUERY)\]", stripped, re.IGNORECASE):
+            continue  # drop trace lines
+        sanitized_lines.append(line)
+    answer = "\n".join(sanitized_lines).strip()
+
+    # If answer is empty/blank after sanitization, return safe fallback
+    if not answer or answer.isspace():
+        answer = (
+            "INSUFFICIENT_EVIDENCE: No valid answer could be synthesized "
+            "from the retrieved evidence."
+        )
+        # Also force low confidence
+        synthesis.confidence = "low"
+        synthesis.cited_ids = []
+
     evidence_list = []
     for item in retrieved_evidence:
         numeric_id = 0
@@ -112,7 +135,7 @@ def _build_response_dict(
     return {
         "query_id": 1,
         "query": query_text,
-        "answer": synthesis.answer_text,
+        "answer": answer,
         "citations": synthesis.cited_ids,
         "confidence": synthesis.confidence,
         "confidence_score": conf_score,
