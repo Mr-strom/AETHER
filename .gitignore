@@ -61,7 +61,7 @@ Thumbs.db
 .vscode/
 
 # Uploads (runtime)
-uploads/
+
 
 # State files
 CURRENT_STATE.md
