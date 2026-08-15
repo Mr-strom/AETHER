@@ -229,9 +229,9 @@ async def _run_pipeline(
             "Citation guard FAILED (attempt 1): reason=%s, missing=%s",
             guard_result["reason"], guard_result.get("missing_eids", []),
         )
-        # Retry once with stricter prompt
+        # Retry once with STRICTER prompt
         await emit("validating", "Re-generating with stricter citation rules...")
-        synthesis = await answer_synthesizer_service.synthesize(
+        synthesis = await answer_synthesizer_service.synthesize_strict(
             evidence=retrieved_evidence,
             query=query_text,
             unload_after=False,

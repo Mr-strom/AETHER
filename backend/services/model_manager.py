@@ -20,19 +20,23 @@ logger = logging.getLogger(__name__)
 MODEL_SPECS: Dict[str, Dict[str, Any]] = {
     "granite": {
         "filename": settings.GRANITE_MODEL_FILENAME,
-        "n_ctx": 2048,
+        "n_ctx": 1024,       # Planner only needs ~350 tokens total
+        "n_batch": 128,      # Hybrid-SSM needs smaller batch on CPU
         "n_threads": 16,
         "n_gpu_layers": 0,
         "size_mb": 1500,
         "is_resident": True,
+        "chat_format": "chatml",
     },
     "qwen": {
         "filename": settings.QWEN_MODEL_FILENAME,
         "n_ctx": 8192,
+        "n_batch": 512,
         "n_threads": 16,
         "n_gpu_layers": 999,
         "size_mb": 2500,
         "is_resident": False,
+        "chat_format": "chatml",
     },
 }
 
@@ -181,15 +185,21 @@ class SmartModelManager:
                 n_ctx = spec["n_ctx"] if spec else 4096
                 n_threads = spec["n_threads"] if spec else 16
                 n_gpu_layers = spec.get("n_gpu_layers", 0) if spec else 0
+                n_batch = spec.get("n_batch", 512) if spec else 512
+                chat_format = spec.get("chat_format") if spec else None
 
-                handle = Llama(
-                    model_path=str(model_path),
-                    n_ctx=n_ctx,
-                    n_threads=n_threads,
-                    n_batch=512,
-                    n_gpu_layers=n_gpu_layers,
-                    verbose=False,
-                )
+                kwargs: Dict[str, Any] = {
+                    "model_path": str(model_path),
+                    "n_ctx": n_ctx,
+                    "n_threads": n_threads,
+                    "n_batch": n_batch,
+                    "n_gpu_layers": n_gpu_layers,
+                    "verbose": False,
+                }
+                if chat_format:
+                    kwargs["chat_format"] = chat_format
+
+                handle = Llama(**kwargs)
                 self.loaded_models[model_name] = handle
                 logger.info("Model '%s' loaded into memory successfully.", model_name)
                 return handle

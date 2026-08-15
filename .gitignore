@@ -8,6 +8,7 @@
 # Heavy Assets & Model Weights
 models/*.gguf
 models/.cache/
+models/hf_cache/
 *.gguf
 *.pt
 *.bin

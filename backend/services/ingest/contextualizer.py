@@ -160,6 +160,46 @@ class Contextualizer:
             return chunk_text
 
     # ------------------------------------------------------------------
+    # Rule-based fallback (no LLM needed)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rule_based_context(chunks: List[str]) -> List[str]:
+        """Prepend first sentence of document to each chunk as cheap context.
+
+        Used when granite model is unavailable or crashes.
+        """
+        # Extract first meaningful sentence from the document
+        first_text = ""
+        for chunk in chunks:
+            stripped = chunk.strip()
+            if len(stripped) > 30:
+                # Take first sentence (up to first period, question mark, or 120 chars)
+                for i, ch in enumerate(stripped):
+                    if ch in ".!?" and i > 20:
+                        first_text = stripped[: i + 1]
+                        break
+                if not first_text:
+                    first_text = stripped[:120]
+                break
+
+        if not first_text:
+            logger.info("Contextualizer: rule-based fallback has no usable first sentence.")
+            return list(chunks)
+
+        logger.info(
+            "Contextualizer: using rule-based fallback (%d chars): %s...",
+            len(first_text), first_text[:80],
+        )
+        results = []
+        for chunk in chunks:
+            if len(chunk.strip()) < 20:
+                results.append(chunk)
+            else:
+                results.append(f"{first_text} {chunk}")
+        return results
+
+    # ------------------------------------------------------------------
     # Full pipeline
     # ------------------------------------------------------------------
 
@@ -181,10 +221,10 @@ class Contextualizer:
             summary = self.summarize_document(chunks)
         except Exception as exc:
             logger.warning(
-                "Contextualizer: skipping contextualization for batch (reason: %s). "
-                "Using raw text.", exc,
+                "Contextualizer: granite model unavailable (%s). "
+                "Falling back to rule-based context.", exc,
             )
-            return list(chunks)
+            return self._rule_based_context(chunks)
 
         results = []
         for chunk in chunks:

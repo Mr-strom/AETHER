@@ -154,16 +154,38 @@ class EmbeddingService:
                     "Loading embedding model '%s' …", self._model_name
                 )
                 try:
+                    from pathlib import Path
                     from sentence_transformers import SentenceTransformer
 
-                    self._model = SentenceTransformer(
-                        self._model_name,
-                        trust_remote_code=True,
-                    )
-                    logger.info(
-                        "Embedding model '%s' loaded successfully.",
-                        self._model_name,
-                    )
+                    cache_dir = str(Path("./models/hf_cache").resolve())
+
+                    # Try local cache first (no network hit)
+                    try:
+                        self._model = SentenceTransformer(
+                            self._model_name,
+                            trust_remote_code=True,
+                            cache_folder=cache_dir,
+                            local_files_only=True,
+                        )
+                        logger.info(
+                            "Embedding model '%s' loaded from local cache.",
+                            self._model_name,
+                        )
+                    except Exception:
+                        # Cache miss — download and cache for next time
+                        logger.info(
+                            "Local cache miss for '%s'. Downloading (one-time)...",
+                            self._model_name,
+                        )
+                        self._model = SentenceTransformer(
+                            self._model_name,
+                            trust_remote_code=True,
+                            cache_folder=cache_dir,
+                        )
+                        logger.info(
+                            "Embedding model '%s' downloaded and cached.",
+                            self._model_name,
+                        )
                 except Exception as exc:
                     logger.error(
                         "Failed to load embedding model '%s': %s",
