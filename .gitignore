@@ -6,9 +6,7 @@
 .env.production.local
 
 # Heavy Assets & Model Weights
-models/*.gguf
-models/.cache/
-models/hf_cache/
+models/
 *.gguf
 *.pt
 *.bin
@@ -60,8 +58,9 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Uploads (runtime)
-
+# Uploads (runtime — keep directory tracked)
+uploads/*
+!uploads/.gitkeep
 
 # State files
 CURRENT_STATE.md
