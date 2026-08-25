@@ -1,0 +1,15 @@
+AETHER Offline Import Test
+
+This is a supported UTF-8 text file for testing AETHER import in the browser preview and Android app.
+
+Key facts:
+1. AETHER stores imported Android text files in private app storage.
+2. Browser preview imports can index a selected file, but the browser does not retain the original file after import.
+3. Every grounded answer should show an EID citation that you can inspect through Answer Trace.
+4. If the evidence does not support a question, AETHER must answer INSUFFICIENT_EVIDENCE instead of inventing information.
+5. Supported test formats are TXT, MD, CSV, JSON, LOG, and RST, with a maximum size of 12 MB.
+
+Suggested test questions:
+- Where are Android files stored?
+- What happens when the evidence is insufficient?
+- Which file formats are supported?
