@@ -35,6 +35,7 @@ export type RetrievalHit = EvidenceChunk & { score: number; lexicalScore: number
 export type PipelineEvent = { stage: PipelineStage; title: string; detail: string; durationMs: number; status: "complete" | "skipped" | "fallback" };
 export type ExplainabilityTrace = { mode: AnswerMode; query: string; queryTerms: string[]; retrievalMethod: string; candidateCount: number; selectedEvidenceIds: string[]; citationsValid: boolean; confidence: "high" | "medium" | "low"; abstentionReason?: string; latencyMs: number; runtimeNote: string; hits: RetrievalHit[]; pipeline: PipelineEvent[] };
 export type ChatMessage = { id: string; role: "user" | "assistant"; text: string; createdAt: string; citations: string[]; trace?: ExplainabilityTrace };
+export type ConversationExchange = { user: string; assistant: string };
 export type RuntimeProfile = "lite" | "standard";
 export type RuntimeState = { profile: RuntimeProfile; modelPath?: string; modelName?: string; loaded: boolean; loading: boolean; mode: "extractive" | "local_model"; note: string };
 export type AudioModelState = { installed: boolean; loading: boolean; modelPath?: string; modelName?: string; note: string };
