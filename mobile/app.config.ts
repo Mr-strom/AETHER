@@ -28,7 +28,7 @@ const schemeFromBundleId = `manus${timestamp}`;
 
 const env = {
   // App branding - update these values directly (do not use env vars)
-  appName: "AETHER Offline",
+  appName: "AETHER",
   appSlug: "aether-mobile-offline",
   logoUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663881095852/eQUSqqsasBskbNWW.png",
   scheme: schemeFromBundleId,
@@ -121,8 +121,10 @@ const config: ExpoConfig = {
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["arm64-v8a"],
-          minSdkVersion: 26,
+          buildArchs: ["arm64-v8a", "armeabi-v7a"],
+          minSdkVersion: 29,
+          targetSdkVersion: 34,
+          compileSdkVersion: 34,
         },
       },
     ],
