@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AETHER_SYSTEM_PROMPT, applyAntiRepetitionGuard, buildExtractiveAnswer, buildGroundedPrompt, calculateTextOverlap, checkRecentRepetition, chunkText, deduplicateHits, getRecentExchanges, retrieveLocalEvidence, validateCitations } from "../lib/aether/engine";
-import { convertListsToNaturalSentences } from "../components/aether/chat-ui";
+import { AETHER_SYSTEM_PROMPT, applyAntiRepetitionGuard, buildExtractiveAnswer, buildGroundedPrompt, calculateTextOverlap, checkRecentRepetition, chunkText, convertListsToNaturalSentences, deduplicateHits, getRecentExchanges, retrieveLocalEvidence, validateCitations } from "../lib/aether/engine";
 import { MAX_AUDIO_IMPORT_BYTES, MAX_IMPORT_BYTES, validateAudioImportCandidate, validateImportCandidate, validateLocalQuery, validateTextContent } from "../lib/aether/import-validation";
 import { ChatMessage, ConversationExchange, EvidenceChunk, createEmptySnapshot } from "../lib/aether/types";
 
@@ -146,8 +145,26 @@ describe("AETHER local evidence engine", () => {
   });
 
   it("enforces max chunks sent to LLM at 5 (not 10, not 20)", () => {
+    const sampleTopics = [
+      "Thermal cooling systems maintain device core below critical threshold.",
+      "Battery auxiliary power units provide uninterrupted operations during blackout.",
+      "Memory allocation strategies optimize garbage collection on constrained nodes.",
+      "Secure cryptographic key exchanges ensure encrypted transport protocols.",
+      "Asynchronous message dispatch queues prevent UI main thread stalls.",
+      "Local vector similarity indices accelerate nearest neighbor lookups.",
+      "Persistent storage caching reduces disk I/O latency on flash drives.",
+      "Network packet compression decreases bandwidth usage over air-gapped channels.",
+      "Dynamic load balancing distributes parallel worker execution evenly.",
+      "Hardware abstraction layers isolate platform specific peripheral drivers.",
+      "Database journal write-ahead logging guarantees atomic transaction safety.",
+      "Input sanitation routines filter control characters and prevent injection.",
+      "Diagnostic trace telemetry captures pipeline execution durations.",
+      "Citation verification algorithms validate reference IDs against evidence sets.",
+      "Resource telemetry monitors native heap allocations and system limits.",
+    ];
+
     const manyChunks = Array.from({ length: 15 }, (_, i) => ({
-      ...chunk(`EID-${i + 1}`, `Unique documentation segment number ${i + 1} with specific distinct facts about topic ${i + 1}.`),
+      ...chunk(`EID-${i + 1}`, sampleTopics[i]),
       matchedTerms: [`topic ${i + 1}`],
       lexicalScore: 0.9 - i * 0.02,
       score: 0.9 - i * 0.02,

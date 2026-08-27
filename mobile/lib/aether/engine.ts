@@ -295,3 +295,43 @@ export function validateCitations(answer: string, hits: RetrievalHit[]): boolean
   if (answer.startsWith("INSUFFICIENT_EVIDENCE")) return citations.length === 0;
   return citations.length > 0 && citations.every((citation) => allowed.has(citation.slice(1, -1)));
 }
+
+export function convertListsToNaturalSentences(text: string): string {
+  if (!text) return "";
+
+  const listBlockRegex = /(?:(?:^|\n)\s*(?:\d+[\.\)]|\*|-|\u2022)\s+[^\n]+(?:\n\s*(?:\d+[\.\)]|\*|-|\u2022)\s+[^\n]+)+)/g;
+
+  return text.replace(listBlockRegex, (block, offset, fullString) => {
+    const hasLeadingNewline = block.startsWith("\n");
+    const lines = block
+      .split("\n")
+      .map((line) => line.replace(/^\s*(?:\d+[\.\)]|\*|-|\u2022)\s+/, "").trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) return block;
+    if (lines.length === 1) return lines[0];
+
+    const cleanItems = lines.map((l) => l.replace(/[\.;,]$/, ""));
+
+    let result = "";
+    if (cleanItems.length === 2) {
+      result = `${cleanItems[0]}. In addition, ${cleanItems[1].charAt(0).toLowerCase() + cleanItems[1].slice(1)}.`;
+    } else {
+      const first = cleanItems[0];
+      const second = cleanItems[1];
+      const rest = cleanItems.slice(2);
+
+      result = `First, ${first.charAt(0).toLowerCase() + first.slice(1)}, followed by ${second.charAt(0).toLowerCase() + second.slice(1)}.`;
+      if (rest.length > 0) {
+        const restFormatted = rest.map((item) => item.charAt(0).toLowerCase() + item.slice(1)).join(", and ");
+        result += ` Furthermore, this includes ${restFormatted}.`;
+      }
+    }
+
+    if (hasLeadingNewline && offset > 0 && fullString[offset - 1] === ":") {
+      return ` ${result}`;
+    }
+    return hasLeadingNewline ? `\n${result}` : result;
+  });
+}
+

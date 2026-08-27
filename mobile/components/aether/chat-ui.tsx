@@ -18,9 +18,11 @@ import { useRouter } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as Haptics from "expo-haptics";
 import { EvidenceSheet } from "./evidence-sheet";
-import { ResourceBar } from "./resource-bar";
 import { useAether } from "@/lib/aether/provider";
+import { convertListsToNaturalSentences } from "@/lib/aether/engine";
 import { ChatMessage, EvidenceChunk, RetrievalHit } from "@/lib/aether/types";
+
+export { convertListsToNaturalSentences };
 
 function formatTime(value?: number) {
   const total = Math.max(0, Math.round((value ?? 0) / 1000));
@@ -40,40 +42,6 @@ function formatMessageTime(isoString?: string): string {
   } catch {
     return "";
   }
-}
-
-export function convertListsToNaturalSentences(text: string): string {
-  if (!text) return "";
-
-  // Matches numbered lists (e.g. 1. ... 2. ...) or bullet lists (e.g. - ... * ...)
-  const listBlockRegex = /(?:(?:^|\n)\s*(?:\d+[\.\)]|\*|-|\u2022)\s+[^\n]+(?:\n\s*(?:\d+[\.\)]|\*|-|\u2022)\s+[^\n]+)+)/g;
-
-  return text.replace(listBlockRegex, (block) => {
-    const lines = block
-      .split("\n")
-      .map((line) => line.replace(/^\s*(?:\d+[\.\)]|\*|-|\u2022)\s+/, "").trim())
-      .filter(Boolean);
-
-    if (lines.length === 0) return block;
-    if (lines.length === 1) return lines[0];
-
-    const cleanItems = lines.map((l) => l.replace(/[\.;,]$/, ""));
-
-    if (cleanItems.length === 2) {
-      return `${cleanItems[0]}. In addition, ${cleanItems[1].charAt(0).toLowerCase() + cleanItems[1].slice(1)}.`;
-    }
-
-    const first = cleanItems[0];
-    const second = cleanItems[1];
-    const rest = cleanItems.slice(2);
-
-    let result = `First, ${first.charAt(0).toLowerCase() + first.slice(1)}, followed by ${second.charAt(0).toLowerCase() + second.slice(1)}.`;
-    if (rest.length > 0) {
-      const restFormatted = rest.map((item) => item.charAt(0).toLowerCase() + item.slice(1)).join(", and ");
-      result += ` Furthermore, this includes ${restFormatted}.`;
-    }
-    return result;
-  });
 }
 
 function resolveHit(eid: string, item: ChatMessage, allChunks: EvidenceChunk[]): RetrievalHit {
@@ -431,7 +399,7 @@ export function ChatUI() {
     importDocument,
     importAudioEvidence,
     stop,
-    refreshTelemetry,
+    clearAll,
   } = useAether();
 
   const router = useRouter();

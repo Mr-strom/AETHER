@@ -1,6 +1,6 @@
 export type SourceStatus = "ready" | "indexing" | "failed" | "no_text";
 export type AnswerMode = "extractive" | "local_model" | "abstained";
-export type SourceModality = "text" | "audio";
+export type SourceModality = "text" | "audio" | "image";
 export type PipelineStage = "query" | "retrieval" | "evidence" | "generation" | "validation" | "abstention";
 
 export type EvidenceChunk = {
