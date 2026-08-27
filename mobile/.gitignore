@@ -59,6 +59,8 @@ Thumbs.db
 # Build files
 *.tgz
 *.tar.gz
+*.apk
+*.aab
 .cache/
 
 # AI tool scaffolding artifacts
